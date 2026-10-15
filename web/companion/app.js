@@ -1,7 +1,8 @@
 import {
   MODES, SCALES, ROOTS, DEGREE_NAMES, DRUMS, createState, restoreState, snapshotState,
   setCc, ccNumber, setCcNumber, setDrumNote, setSeqNote, setTempo,
-  toggleStep, visibleStep, scaleNote, chordNotes, noteName, stepDurationMs, sequenceEventsAtStep,
+  toggleStep, setStepEnabled, visibleStep, stepParam, effectiveStepNote, setStepParam,
+  scaleNote, chordNotes, noteName, stepDurationMs, sequenceEventsAtStep,
 } from './model.js';
 
 const STORAGE_KEY = 'saibertin-s-fm-companion-v1';
@@ -12,10 +13,11 @@ const held = new Map();
 
 let playing = false;
 let playhead = -1;
+let selectedStep = state.page * 16;
 let transportTimer = null;
 let nextTickAt = 0;
 const seqActive = new Map();
-const seqOffTimers = new Map();
+const seqTimers = new Set();
 
 const $ = (id) => document.getElementById(id);
 const modesEl = $('modes');
@@ -31,6 +33,14 @@ const drumMapEl = $('drumMap');
 const tempoEl = $('tempo');
 const seqNoteEl = $('seqNote');
 const followEl = $('follow');
+const stepEditorEl = $('stepEditor');
+const stepEnabledEl = $('stepEnabled');
+const stepUseDefaultEl = $('stepUseDefault');
+const stepNoteEl = $('stepNote');
+const stepVelocityEl = $('stepVelocity');
+const stepGateEl = $('stepGate');
+const stepProbabilityEl = $('stepProbability');
+const stepRatchetEl = $('stepRatchet');
 
 function loadState() {
   try {
@@ -89,32 +99,47 @@ function startHeld(id, notes) {
   held.set(id, { ch, notes: [...notes] });
 }
 
+function trackedTimeout(fn, delay) {
+  const timer = setTimeout(() => {
+    seqTimers.delete(timer);
+    fn();
+  }, Math.max(0, delay));
+  seqTimers.add(timer);
+  return timer;
+}
+
 function stopSequencerNotes() {
-  for (const timer of seqOffTimers.values()) clearTimeout(timer);
-  seqOffTimers.clear();
+  for (const timer of seqTimers) clearTimeout(timer);
+  seqTimers.clear();
   for (const event of seqActive.values()) noteOff(event.note, event.channel);
   seqActive.clear();
 }
 
-function triggerSequenceEvent(event) {
-  const priorTimer = seqOffTimers.get(event.track);
-  if (priorTimer) clearTimeout(priorTimer);
+function fireSequenceHit(event, hitSpan) {
   const prior = seqActive.get(event.track);
   if (prior) noteOff(prior.note, prior.channel);
 
-  noteOn(event.note, event.velocity, event.channel);
-  seqActive.set(event.track, event);
+  const hit = { ...event };
+  noteOn(hit.note, hit.velocity, hit.channel);
+  seqActive.set(hit.track, hit);
 
-  const gateMs = Math.max(20, stepDurationMs(state.tempo) * 0.55);
-  const timer = setTimeout(() => {
-    const current = seqActive.get(event.track);
-    if (current === event) {
-      noteOff(event.note, event.channel);
-      seqActive.delete(event.track);
+  const gateMs = Math.max(4, Math.min(hitSpan * 0.9, hitSpan * (hit.gate / 100)));
+  trackedTimeout(() => {
+    const current = seqActive.get(hit.track);
+    if (current === hit) {
+      noteOff(hit.note, hit.channel);
+      seqActive.delete(hit.track);
     }
-    seqOffTimers.delete(event.track);
   }, gateMs);
-  seqOffTimers.set(event.track, timer);
+}
+
+function triggerSequenceEvent(event) {
+  const hits = Math.max(1, Math.min(4, event.ratchet || 1));
+  const span = stepDurationMs(state.tempo) / hits;
+  for (let i = 0; i < hits; i++) {
+    if (i === 0) fireSequenceHit(event, span);
+    else trackedTimeout(() => fireSequenceHit(event, span), i * span);
+  }
 }
 
 function runTransportStep() {
@@ -252,9 +277,13 @@ function keyInfo(i) {
   switch (state.mode) {
     case 'SEQ': {
       const absolute = state.page * 16 + i;
+      const p = stepParam(state, state.selectedTrack, absolute);
+      const active = visibleStep(state, i);
+      const note = effectiveStepNote(state, state.selectedTrack, absolute);
       return {
-        label: String(absolute + 1),
-        active: visibleStep(state, i),
+        label: active ? `${absolute + 1}\n${noteName(note)}${p.ratchet > 1 ? ` ×${p.ratchet}` : ''}` : String(absolute + 1),
+        active,
+        selected: absolute === selectedStep,
         playhead: playing && absolute === playhead,
         notes: [],
       };
@@ -282,16 +311,18 @@ function renderSurface() {
   for (let i = 0; i < 16; i++) {
     const info = keyInfo(i);
     const b = document.createElement('button');
-    b.className = `key ${info.active ? 'active' : ''} ${info.playhead ? 'playhead' : ''}`;
+    b.className = `key ${info.active ? 'active' : ''} ${info.selected ? 'selected' : ''} ${info.playhead ? 'playhead' : ''}`;
     b.innerText = info.label;
     const id = `k${i}`;
     const down = (e) => {
       e.preventDefault();
       b.classList.add('playing');
       if (state.mode === 'SEQ') {
+        selectedStep = state.page * 16 + i;
         toggleStep(state, i);
         persist();
         renderSurface();
+        renderStepEditor();
       } else {
         startHeld(id, info.notes);
       }
@@ -335,6 +366,27 @@ function renderDrumEditor() {
   }
 }
 
+function renderStepEditor() {
+  const show = state.mode === 'SEQ';
+  stepEditorEl.classList.toggle('hidden', !show);
+  if (!show) return;
+
+  const track = state.selectedTrack;
+  const step = Math.max(0, Math.min(63, selectedStep));
+  const p = stepParam(state, track, step);
+  const effective = effectiveStepNote(state, track, step);
+  $('stepTitle').textContent = `T${track + 1} · STEP ${step + 1}`;
+  stepEnabledEl.checked = state.steps[track][step];
+  stepUseDefaultEl.checked = p.note === null;
+  stepNoteEl.disabled = p.note === null;
+  stepNoteEl.value = String(effective);
+  $('stepNoteName').textContent = noteName(effective);
+  stepVelocityEl.value = String(p.velocity);
+  stepGateEl.value = String(p.gate);
+  stepProbabilityEl.value = String(p.probability);
+  stepRatchetEl.value = String(p.ratchet);
+}
+
 function renderTransport() {
   $('play').classList.toggle('transport-on', playing);
   tempoEl.value = String(state.tempo);
@@ -360,6 +412,7 @@ function render() {
   renderTracks();
   renderCcs();
   renderDrumEditor();
+  renderStepEditor();
   renderTransport();
   renderSurface();
   renderScreen();
@@ -420,6 +473,8 @@ seqNoteEl.onchange = () => {
   seqNoteEl.value = String(note);
   persist();
   renderTransport();
+  renderStepEditor();
+  if (state.mode === 'SEQ') renderSurface();
 };
 
 followEl.onchange = () => {
@@ -427,11 +482,56 @@ followEl.onchange = () => {
   persist();
 };
 
+stepEnabledEl.onchange = () => {
+  setStepEnabled(state, state.selectedTrack, selectedStep, stepEnabledEl.checked);
+  persist();
+  renderSurface();
+};
+
+stepUseDefaultEl.onchange = () => {
+  const current = effectiveStepNote(state, state.selectedTrack, selectedStep);
+  setStepParam(state, state.selectedTrack, selectedStep, 'note', stepUseDefaultEl.checked ? null : current);
+  persist();
+  renderStepEditor();
+  renderSurface();
+};
+
+stepNoteEl.onchange = () => {
+  const note = setStepParam(state, state.selectedTrack, selectedStep, 'note', stepNoteEl.value);
+  stepNoteEl.value = String(note);
+  stepUseDefaultEl.checked = false;
+  persist();
+  renderStepEditor();
+  renderSurface();
+};
+
+stepVelocityEl.onchange = () => {
+  stepVelocityEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'velocity', stepVelocityEl.value));
+  persist();
+};
+
+stepGateEl.onchange = () => {
+  stepGateEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'gate', stepGateEl.value));
+  persist();
+};
+
+stepProbabilityEl.onchange = () => {
+  stepProbabilityEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'probability', stepProbabilityEl.value));
+  persist();
+};
+
+stepRatchetEl.onchange = () => {
+  stepRatchetEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'ratchet', stepRatchetEl.value));
+  persist();
+  renderSurface();
+};
+
 $('reset').onclick = () => {
   if (!window.confirm('Reset Browser Companion mappings, steps and settings?')) return;
   stopTransport({ persistPage: false });
   stopAllHeld();
   state = createState();
+  selectedStep = 0;
   persist();
   render();
 };
@@ -450,8 +550,18 @@ Object.keys(SCALES).forEach((name) => scaleEl.add(new Option(name, name)));
 rootEl.onchange = () => { stopAllHeld(); state.root = Number(rootEl.value); persist(); render(); };
 scaleEl.onchange = () => { stopAllHeld(); state.scale = scaleEl.value; persist(); render(); };
 
-$('pagePrev').onclick = () => { state.page = (state.page + 3) % 4; persist(); render(); };
-$('pageNext').onclick = () => { state.page = (state.page + 1) % 4; persist(); render(); };
+$('pagePrev').onclick = () => {
+  state.page = (state.page + 3) % 4;
+  selectedStep = state.page * 16;
+  persist();
+  render();
+};
+$('pageNext').onclick = () => {
+  state.page = (state.page + 1) % 4;
+  selectedStep = state.page * 16;
+  persist();
+  render();
+};
 
 window.addEventListener('blur', stopAllHeld);
 window.addEventListener('beforeunload', () => {
