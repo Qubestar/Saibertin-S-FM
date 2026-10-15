@@ -17,6 +17,10 @@ const defaults = {
   sendTransport: true,
 };
 
+function emitTransport(name, detail = {}) {
+  window.dispatchEvent(new CustomEvent(`saibertin:${name}`, { detail }));
+}
+
 function loadSync() {
   try {
     const raw = JSON.parse(localStorage.getItem(SYNC_KEY) || 'null') || {};
@@ -214,6 +218,7 @@ function scheduleExternalEvent(event, baseDelay, stepMs) {
   }, delay);
 }
 function planExternalTick(tick, baseDelay = 0) {
+  emitTransport('transport-plan', { tick, source: 'EXTERNAL' });
   const state = loadMusicalState();
   const bpm = detectedBpm || currentTempo();
   const stepMs = stepIntervalMs(bpm);
@@ -222,6 +227,7 @@ function planExternalTick(tick, baseDelay = 0) {
 }
 function showExternalTick(tick) {
   updateExternalPlayhead(loadMusicalState(), tick);
+  emitTransport('transport-tick', { tick, source: 'EXTERNAL' });
 }
 function planNextExternalTick(fromNowMs = null) {
   const bpm = detectedBpm || currentTempo();
@@ -269,10 +275,12 @@ function panicExternal() {
   usedRoutes.clear();
 }
 function stopExternal({ panic = true } = {}) {
+  const wasRunning = externalRunning;
   externalRunning = false;
   if (panic) panicExternal();
   const play = $('play');
   if (play) play.classList.remove('transport-on');
+  if (wasRunning) emitTransport('transport-stop', { source: 'EXTERNAL' });
   refreshUi();
 }
 
@@ -287,6 +295,7 @@ function onMidiMessage(event) {
     clockIntervals = [];
     lastClockAt = null;
     externalRunning = true;
+    emitTransport('transport-start', { tick: 0, source: 'EXTERNAL' });
     planExternalTick(0, 0);
     showExternalTick(0);
     planNextExternalTick();
@@ -294,7 +303,9 @@ function onMidiMessage(event) {
     return;
   }
   if (byte === MIDI_CONTINUE) {
+    const wasRunning = externalRunning;
     externalRunning = true;
+    if (!wasRunning) emitTransport('transport-start', { tick: externalTick, source: 'EXTERNAL', continued: true });
     const remainder = externalClockCount % CLOCKS_PER_16TH;
     const remaining = remainder === 0 ? CLOCKS_PER_16TH : CLOCKS_PER_16TH - remainder;
     const pulseMs = detectedBpm ? clockIntervalMs(detectedBpm) : clockIntervalMs(currentTempo());

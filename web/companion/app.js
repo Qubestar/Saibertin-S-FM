@@ -56,6 +56,10 @@ const internalEngineEl = $('internalEngine');
 const internalSoundEl = $('internalSound');
 const outputSelects = MIDI_PORTS.map((port) => $(`output${port}`));
 
+function emitTransport(name, detail = {}) {
+  window.dispatchEvent(new CustomEvent(`saibertin:${name}`, { detail }));
+}
+
 function loadState() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
@@ -171,9 +175,11 @@ function showPlayhead(tick) {
   renderTransport();
   renderScreen();
   if (state.mode === 'SEQ') renderSurface();
+  emitTransport('transport-tick', { tick, source: 'INTERNAL' });
 }
 function planTransportTick(tick, nominalAt) {
   if (!playing) return;
+  emitTransport('transport-plan', { tick, source: 'INTERNAL' });
   const stepMs = stepDurationMs(state.tempo);
   for (const event of sequenceEventsAtTick(state, tick)) scheduleSequenceEvent(event, nominalAt, stepMs);
   trackedTimeout(() => showPlayhead(tick), nominalAt - performance.now());
@@ -187,12 +193,14 @@ function startTransport(startTick = 0) {
   playing = true;
   transportTick = startTick - 1;
   playhead = -1;
+  emitTransport('transport-start', { tick: Math.max(0, Math.floor(startTick)), source: 'INTERNAL' });
   const stepMs = stepDurationMs(state.tempo);
   planTransportTick(Math.max(0, Math.floor(startTick)), performance.now() + stepMs * 0.55);
   renderTransport();
   renderScreen();
 }
 function stopTransport({ persistPage = true } = {}) {
+  const wasPlaying = playing;
   playing = false;
   stopSequencerNotes();
   transportTick = -1;
@@ -201,6 +209,7 @@ function stopTransport({ persistPage = true } = {}) {
   renderTransport();
   renderScreen();
   if (state.mode === 'SEQ') renderSurface();
+  if (wasPlaying) emitTransport('transport-stop', { source: 'INTERNAL' });
 }
 function normalizeViewForTrack() {
   const maxPage = maxPageForTrack(state, state.selectedTrack);
@@ -527,6 +536,18 @@ rootEl.onchange = () => { stopAllHeld(); state.root = Number(rootEl.value); pers
 scaleEl.onchange = () => { stopAllHeld(); state.scale = scaleEl.value; persist(); render(); };
 $('pagePrev').onclick = () => { const max = maxPageForTrack(state, state.selectedTrack); state.page = state.page <= 0 ? max : state.page - 1; selectedStep = state.page * 16; persist(); render(); };
 $('pageNext').onclick = () => { const max = maxPageForTrack(state, state.selectedTrack); state.page = state.page >= max ? 0 : state.page + 1; selectedStep = state.page * 16; persist(); render(); };
+window.addEventListener('saibertin:replace-state', (event) => {
+  const incoming = event.detail?.state;
+  if (!incoming) return;
+  stopAllHeld();
+  state = restoreState(incoming);
+  selectedStep = Math.min(Math.max(0, selectedStep), state.trackLengths[state.selectedTrack] - 1);
+  normalizeViewForTrack();
+  if (playing && transportTick >= 0) playhead = trackLocalStep(state, state.selectedTrack, transportTick);
+  persist();
+  render();
+  window.dispatchEvent(new CustomEvent('saibertin:state-replaced', { detail: { reason: event.detail?.reason || 'external' } }));
+});
 window.addEventListener('blur', stopAllHeld);
 window.addEventListener('beforeunload', () => { stopTransport({ persistPage: false }); stopAllHeld(); });
 

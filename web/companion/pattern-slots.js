@@ -155,6 +155,10 @@ if (trackUi) {
   const observer = new MutationObserver(() => queueMicrotask(() => renderSlots()));
   observer.observe(trackUi, { childList: true });
 }
+window.addEventListener('saibertin:scene-recalled', () => {
+  store = readStore();
+  renderSlots('Pattern slots updated from recalled scene.');
+});
 window.addEventListener('beforeunload', () => {
   try { saveCurrentToActive(); } catch {}
 });
