@@ -1,6 +1,6 @@
 export const MODES = ['KEYS', 'SCALE', 'CHORD', 'DRUM', 'SEQ'];
 export const DEFAULT_CCS = [74, 71, 73, 91];
-export const STORAGE_VERSION = 2;
+export const STORAGE_VERSION = 3;
 
 export const SCALES = {
   Major: [0, 2, 4, 5, 7, 9, 11],
@@ -24,7 +24,15 @@ export const DRUMS = [
 ];
 
 function defaultStepParam() {
-  return { note: null, velocity: 100, gate: 55, probability: 100, ratchet: 1 };
+  return {
+    note: null,
+    velocity: 100,
+    gate: 55,
+    probability: 100,
+    ratchet: 1,
+    micro: 0,
+    ccLocks: [null, null, null, null],
+  };
 }
 
 export function createState() {
@@ -71,6 +79,13 @@ function restoreStepParam(raw) {
   p.gate = clampInt(raw.gate, 5, 100, 55);
   p.probability = clampInt(raw.probability, 0, 100, 100);
   p.ratchet = clampInt(raw.ratchet, 1, 4, 1);
+  p.micro = clampInt(raw.micro, -50, 50, 0);
+  if (Array.isArray(raw.ccLocks)) {
+    p.ccLocks = Array.from({ length: 4 }, (_, i) => {
+      const v = raw.ccLocks[i];
+      return v === null || v === undefined ? null : clampMidi(v);
+    });
+  }
   return p;
 }
 
@@ -143,9 +158,17 @@ export function setStepParam(state, track, step, field, value) {
     case 'gate': p.gate = clampInt(value, 5, 100, 55); break;
     case 'probability': p.probability = clampInt(value, 0, 100, 100); break;
     case 'ratchet': p.ratchet = clampInt(value, 1, 4, 1); break;
+    case 'micro': p.micro = clampInt(value, -50, 50, 0); break;
     default: break;
   }
   return p[field];
+}
+
+export function setStepCcLock(state, track, step, slot, value) {
+  const p = stepParam(state, track, step);
+  const s = clampInt(slot, 0, 3, 0);
+  p.ccLocks[s] = value === null || value === undefined ? null : clampMidi(value);
+  return p.ccLocks[s];
 }
 
 export function scaleNote(root, scaleName, index, base = 48) {
@@ -187,12 +210,19 @@ export function sequenceEventsAtStep(state, stepIndex, random = Math.random) {
     if (p.probability < 100 && random() * 100 >= p.probability) continue;
     events.push({
       track,
+      step,
       channel: ch - 1,
       note: effectiveStepNote(state, track, step),
       velocity: p.velocity,
       gate: p.gate,
       probability: p.probability,
       ratchet: p.ratchet,
+      micro: p.micro,
+      ccLocks: p.ccLocks.map((value, slot) => value === null ? null : {
+        slot,
+        cc: state.ccNumbers[track][slot],
+        value,
+      }).filter(Boolean),
     });
   }
   return events;
