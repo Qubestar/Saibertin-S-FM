@@ -3,6 +3,7 @@ import './sync.js';
 import './patterns.js';
 import './pattern-slots.js';
 import './variations.js';
+import './scenes.js';
 
 const midiPortEl = document.getElementById('midiPort');
 const channelEl = document.getElementById('channel');
