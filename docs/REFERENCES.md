@@ -70,6 +70,28 @@ Ideas to study:
 - major/minor/key-aware harmonic interaction;
 - a simpler alternative to degree-first chord entry.
 
+## The Firmware Hub
+
+Project: https://thefirmwarehub.com/
+
+Role: community distribution hub for open-source FM-1 firmware.
+
+Relevant publication rules observed from the hub:
+- firmware must be open source;
+- source should be released under GPL-3.0-compatible terms matching the FM-1 firmware lineage;
+- releases should publish an FM-1 `.fwsc` package on GitHub;
+- the hub follows project releases and offers the newest compatible package;
+- the hub mirrors packages unchanged and validates that they are FM-1 update packages;
+- projects keep their own support/issue tracking.
+
+Release target for S1-FM / Saibertin S-FM:
+1. public GitHub source;
+2. tagged release;
+3. `.fwsc` release asset;
+4. web installer/emulator where practical;
+5. documentation and backup/recovery notes;
+6. submit the released firmware to The Firmware Hub after hardware validation.
+
 ## Design rule derived from the references
 
 S1-FM uses one physical surface with explicit modes rather than pretending every control has one permanent role:
