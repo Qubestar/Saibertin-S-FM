@@ -1,0 +1,8 @@
+# Saibertin S-FM upstream lock
+# Do not change without an explicit upstream review.
+
+name=SLOOP
+repository=https://github.com/isod89/sloop-fm1.git
+tag=v2.6
+commit=d30d6553353373cf5506b9ed285fc4a2aa0c30ef
+license=GPL-3.0-only
