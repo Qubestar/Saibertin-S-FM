@@ -38,8 +38,6 @@ function readUi() {
   const fallback = { variation: 'fill-1beat', scope: 'PAGE' };
   const raw = readUiStore();
   const { key } = currentSlotContext();
-  // v1 stored one global selection. Keep it as a migration fallback,
-  // while v2 remembers a separate selection for every track + A/B/C/D slot.
   const legacy = raw.variation || raw.scope ? { variation: raw.variation, scope: raw.scope } : null;
   const saved = raw.bySlot?.[key] || legacy || null;
   return { ...fallback, ...(saved || {}) };
@@ -89,15 +87,19 @@ for (const item of VARIATIONS) {
   }
   groups.get(item.group).append(new Option(item.name, item.id));
 }
-const saved = readUi();
-variationEl.value = VARIATIONS.some((v) => v.id === saved.variation) ? saved.variation : 'fill-1beat';
-scopeEl.value = saved.scope === 'TRACK' ? 'TRACK' : 'PAGE';
 
 function renderContextStatus(message = '') {
   if (message) { statusEl.textContent = message; return; }
   const { track, slot } = currentSlotContext();
   const name = VARIATIONS.find((v) => v.id === variationEl.value)?.name || variationEl.value;
   statusEl.textContent = `${trackLabel(track)} · Pattern ${slot} · selected ${name} · ${scopeEl.value === 'TRACK' ? 'whole track' : 'current page'}. Transform is remembered separately for this slot.`;
+}
+
+function loadContextUi(message = '') {
+  const saved = readUi();
+  variationEl.value = VARIATIONS.some((v) => v.id === saved.variation) ? saved.variation : 'fill-1beat';
+  scopeEl.value = saved.scope === 'TRACK' ? 'TRACK' : 'PAGE';
+  renderContextStatus(message);
 }
 
 for (const el of [variationEl, scopeEl]) el.addEventListener('change', () => { writeUi(); renderContextStatus(); });
@@ -114,4 +116,5 @@ document.getElementById('variationApply').onclick = () => {
   setTimeout(() => location.reload(), 90);
 };
 
-renderContextStatus();
+window.addEventListener('saibertin:scene-recalled', () => loadContextUi('Variation context updated for the recalled scene.'));
+loadContextUi();
