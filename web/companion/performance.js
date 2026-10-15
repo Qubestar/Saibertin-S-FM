@@ -237,10 +237,10 @@ function stopArp({ clearPads = true } = {}) {
 }
 
 function stopPerformance() {
+  panicPerformance();
   stopRepeat();
   stopArp();
   pointers.clear();
-  panicPerformance();
   refreshPadVisuals();
   renderPerformance();
 }
@@ -377,39 +377,39 @@ function renderPerformance() {
 }
 
 function setRepeatEnabled(enabled) {
+  panicPerformance();
   settings.repeatEnabled = Boolean(enabled);
   if (settings.repeatEnabled) {
     settings.arpEnabled = false;
     stopArp();
   } else stopRepeat();
   persist();
-  panicPerformance();
   refreshPadVisuals();
   renderPerformance();
 }
 
 function setArpEnabled(enabled) {
+  panicPerformance();
   settings.arpEnabled = Boolean(enabled);
   if (settings.arpEnabled) {
     settings.repeatEnabled = false;
     stopRepeat();
   } else stopArp();
   persist();
-  panicPerformance();
   refreshPadVisuals();
   renderPerformance();
 }
 
 $p('perfRepeat').onclick = () => setRepeatEnabled(!settings.repeatEnabled);
 $p('perfArp').onclick = () => setArpEnabled(!settings.arpEnabled);
-$p('perfRepeatMode').onchange = () => { stopRepeat(); settings.repeatMode = $p('perfRepeatMode').value; persist(); refreshPadVisuals(); renderPerformance(); };
+$p('perfRepeatMode').onchange = () => { panicPerformance(); stopRepeat(); settings.repeatMode = $p('perfRepeatMode').value; persist(); refreshPadVisuals(); renderPerformance(); };
 $p('perfRepeatRate').onchange = () => { settings.repeatRate = $p('perfRepeatRate').value; if (repeatTimer) { clearTimeout(repeatTimer); repeatTimer = null; ensureRepeatLoop({ immediate: false }); } persist(); };
 $p('perfRepeatTriplet').onchange = () => { settings.repeatTriplet = $p('perfRepeatTriplet').checked; if (repeatTimer) { clearTimeout(repeatTimer); repeatTimer = null; ensureRepeatLoop({ immediate: false }); } persist(); };
 $p('perfArpMode').onchange = () => { settings.arpMode = $p('perfArpMode').value; arpIndex = 0; persist(); };
 $p('perfArpRate').onchange = () => { settings.arpRate = $p('perfArpRate').value; if (arpTimer) { clearTimeout(arpTimer); arpTimer = null; ensureArpLoop({ immediate: false }); } persist(); };
 $p('perfArpTriplet').onchange = () => { settings.arpTriplet = $p('perfArpTriplet').checked; if (arpTimer) { clearTimeout(arpTimer); arpTimer = null; ensureArpLoop({ immediate: false }); } persist(); };
 $p('perfArpOct').onchange = () => { settings.arpOctaves = Math.max(1, Math.min(4, Number($p('perfArpOct').value) || 1)); arpIndex = 0; persist(); };
-$p('perfArpHold').onchange = () => { stopArp(); settings.arpHold = $p('perfArpHold').checked; persist(); refreshPadVisuals(); renderPerformance(); };
+$p('perfArpHold').onchange = () => { panicPerformance(); stopArp(); settings.arpHold = $p('perfArpHold').checked; persist(); refreshPadVisuals(); renderPerformance(); };
 $p('perfGate').onchange = () => { settings.gate = Math.max(5, Math.min(95, Math.round(Number($p('perfGate').value) || 55))); $p('perfGate').value = String(settings.gate); persist(); };
 $p('perfClear').onclick = stopPerformance;
 
