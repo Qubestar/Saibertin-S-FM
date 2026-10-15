@@ -1,6 +1,7 @@
 import './performance.js';
 import './sync.js';
 import './patterns.js';
+import './pattern-slots.js';
 
 const midiPortEl = document.getElementById('midiPort');
 const channelEl = document.getElementById('channel');
