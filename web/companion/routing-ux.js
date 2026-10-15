@@ -1,4 +1,5 @@
 import './performance.js';
+import './sync.js';
 
 const midiPortEl = document.getElementById('midiPort');
 const channelEl = document.getElementById('channel');
