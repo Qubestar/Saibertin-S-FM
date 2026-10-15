@@ -1,8 +1,10 @@
 import {
-  MODES, SCALES, ROOTS, DEGREE_NAMES, DRUMS, createState, restoreState, snapshotState,
+  MODES, SCALES, ROOTS, DEGREE_NAMES, DRUMS, TRACK_TARGETS, INTERNAL_ENGINES,
+  createState, restoreState, snapshotState,
   setCc, ccNumber, setCcNumber, setDrumNote, setSeqNote, setTempo,
+  setTrackLength, setTrackTarget, setInternalEngine, setInternalSound, trackLocalStep, maxPageForTrack,
   toggleStep, setStepEnabled, visibleStep, stepParam, effectiveStepNote, setStepParam, setStepCcLock,
-  scaleNote, chordNotes, noteName, stepDurationMs, sequenceEventsAtStep,
+  scaleNote, chordNotes, noteName, stepDurationMs, sequenceEventsAtTick,
 } from './model.js';
 
 const STORAGE_KEY = 'saibertin-s-fm-companion-v1';
@@ -12,8 +14,9 @@ let output = null;
 const held = new Map();
 
 let playing = false;
+let transportTick = -1;
 let playhead = -1;
-let selectedStep = state.page * 16;
+let selectedStep = Math.min(state.page * 16, state.trackLengths[state.selectedTrack] - 1);
 let plannerTimer = null;
 const seqActive = new Map();
 const seqTimers = new Set();
@@ -42,6 +45,10 @@ const stepProbabilityEl = $('stepProbability');
 const stepRatchetEl = $('stepRatchet');
 const stepMicroEl = $('stepMicro');
 const stepCcLocksEl = $('stepCcLocks');
+const trackLengthEl = $('trackLength');
+const trackTargetEl = $('trackTarget');
+const internalEngineEl = $('internalEngine');
+const internalSoundEl = $('internalSound');
 
 function loadState() {
   try {
@@ -67,7 +74,7 @@ function send(bytes) {
 
 function sendCc(slot, value) {
   const ch = midiChannel();
-  if (ch === null) return;
+  if (ch === null || state.trackTargets[state.selectedTrack] === 'INTERNAL') return;
   send([0xB0 | ch, ccNumber(state, slot), value]);
 }
 
@@ -94,6 +101,7 @@ function stopAllHeld() {
 
 function startHeld(id, notes) {
   stopHeld(id);
+  if (state.trackTargets[state.selectedTrack] === 'INTERNAL') return;
   const ch = midiChannel();
   if (ch === null) return;
   notes.forEach((note) => noteOn(note, 100, ch));
@@ -113,13 +121,16 @@ function stopSequencerNotes() {
   for (const timer of seqTimers) clearTimeout(timer);
   seqTimers.clear();
   plannerTimer = null;
-  for (const event of seqActive.values()) noteOff(event.note, event.channel);
+  for (const event of seqActive.values()) {
+    if (event.emitMidi) noteOff(event.note, event.channel);
+  }
   seqActive.clear();
 }
 
 function fireSequenceHit(event, hitSpan) {
+  if (!event.emitMidi) return;
   const prior = seqActive.get(event.track);
-  if (prior) noteOff(prior.note, prior.channel);
+  if (prior?.emitMidi) noteOff(prior.note, prior.channel);
 
   const hit = { ...event };
   noteOn(hit.note, hit.velocity, hit.channel);
@@ -136,6 +147,7 @@ function fireSequenceHit(event, hitSpan) {
 }
 
 function sendStepLocks(event) {
+  if (!event.emitMidi || event.channel === null) return;
   for (const lock of event.ccLocks || [])
     send([0xB0 | event.channel, lock.cc & 127, lock.value & 127]);
 }
@@ -154,9 +166,10 @@ function scheduleSequenceEvent(event, nominalAt, stepMs) {
   }, eventAt - performance.now());
 }
 
-function showPlayhead(step) {
+function showPlayhead(tick) {
   if (!playing) return;
-  playhead = step;
+  transportTick = tick;
+  playhead = trackLocalStep(state, state.selectedTrack, tick);
   if (state.follow) {
     const page = Math.floor(playhead / 16);
     if (page !== state.page) state.page = page;
@@ -166,30 +179,28 @@ function showPlayhead(step) {
   if (state.mode === 'SEQ') renderSurface();
 }
 
-function planTransportStep(step, nominalAt) {
+function planTransportTick(tick, nominalAt) {
   if (!playing) return;
   const stepMs = stepDurationMs(state.tempo);
-
-  for (const event of sequenceEventsAtStep(state, step))
+  for (const event of sequenceEventsAtTick(state, tick))
     scheduleSequenceEvent(event, nominalAt, stepMs);
 
-  trackedTimeout(() => showPlayhead(step), nominalAt - performance.now());
+  trackedTimeout(() => showPlayhead(tick), nominalAt - performance.now());
 
-  // Plan the next step before its earliest allowed hit. With microtiming down to -50%,
-  // the next event may happen half a step before its nominal grid point.
-  const nextStep = (step + 1) % 64;
+  const nextTick = tick + 1;
   const nextNominalAt = nominalAt + stepMs;
   const planAt = nominalAt + stepMs * 0.25;
-  plannerTimer = trackedTimeout(() => planTransportStep(nextStep, nextNominalAt), planAt - performance.now());
+  plannerTimer = trackedTimeout(() => planTransportTick(nextTick, nextNominalAt), planAt - performance.now());
 }
 
-function startTransport(startStep = 0) {
+function startTransport(startTick = 0) {
   if (playing) return;
   playing = true;
+  transportTick = startTick - 1;
   playhead = -1;
   const stepMs = stepDurationMs(state.tempo);
   const firstNominalAt = performance.now() + stepMs * 0.55;
-  planTransportStep(Math.max(0, Math.min(63, startStep)), firstNominalAt);
+  planTransportTick(Math.max(0, Math.floor(startTick)), firstNominalAt);
   renderTransport();
   renderScreen();
 }
@@ -197,11 +208,20 @@ function startTransport(startStep = 0) {
 function stopTransport({ persistPage = true } = {}) {
   playing = false;
   stopSequencerNotes();
+  transportTick = -1;
   playhead = -1;
   if (persistPage) persist();
   renderTransport();
   renderScreen();
   if (state.mode === 'SEQ') renderSurface();
+}
+
+function normalizeViewForTrack() {
+  const maxPage = maxPageForTrack(state, state.selectedTrack);
+  state.page = Math.min(state.page, maxPage);
+  selectedStep = Math.min(Math.max(0, selectedStep), state.trackLengths[state.selectedTrack] - 1);
+  if (selectedStep < state.page * 16 || selectedStep >= state.page * 16 + 16)
+    selectedStep = state.page * 16;
 }
 
 function renderModes() {
@@ -226,15 +246,33 @@ function renderTracks() {
     const b = document.createElement('button');
     b.className = `btn track ${state.selectedTrack === i ? 'active' : ''}`;
     b.textContent = `T${i + 1}`;
+    b.title = `Length ${state.trackLengths[i]} · ${state.trackTargets[i]}`;
     b.onclick = () => {
       stopAllHeld();
       state.selectedTrack = i;
+      normalizeViewForTrack();
+      if (playing && transportTick >= 0) playhead = trackLocalStep(state, i, transportTick);
       persist();
       render();
     };
     tracksEl.append(b);
   }
   channelEl.value = String(state.channels[state.selectedTrack]);
+}
+
+function renderTrackSetup() {
+  const t = state.selectedTrack;
+  trackLengthEl.value = String(state.trackLengths[t]);
+  trackTargetEl.value = state.trackTargets[t];
+  internalEngineEl.value = state.internalEngines[t];
+  internalSoundEl.value = String(state.internalSounds[t]);
+  const internal = state.trackTargets[t] !== 'MIDI';
+  internalEngineEl.disabled = !internal;
+  internalSoundEl.disabled = !internal;
+  channelEl.disabled = state.trackTargets[t] === 'INTERNAL';
+  $('internalHint').textContent = internal
+    ? 'Internal sound is stored now; Browser Companion audio arrives with the shared SLOOP/WASM core.'
+    : 'MIDI target sends notes/CC to the selected external MIDI output.';
 }
 
 function renderCcs() {
@@ -244,7 +282,6 @@ function renderCcs() {
     const v = state.ccValues[state.selectedTrack][slot];
     const box = document.createElement('div');
     box.className = 'cc';
-
     const title = document.createElement('strong');
     const left = document.createElement('span');
     left.textContent = `K${slot + 1} · CC`;
@@ -254,7 +291,6 @@ function renderCcs() {
     mapInput.min = '0';
     mapInput.max = '127';
     mapInput.value = String(cc);
-    mapInput.title = `MIDI CC number for K${slot + 1}`;
     mapInput.onchange = () => {
       const mapped = setCcNumber(state, slot, mapInput.value);
       mapInput.value = String(mapped);
@@ -292,6 +328,8 @@ function keyInfo(i) {
   switch (state.mode) {
     case 'SEQ': {
       const absolute = state.page * 16 + i;
+      const disabled = absolute >= state.trackLengths[state.selectedTrack];
+      if (disabled) return { label: `${absolute + 1}\n—`, disabled: true, active: false, selected: false, playhead: false, notes: [] };
       const p = stepParam(state, state.selectedTrack, absolute);
       const active = visibleStep(state, i);
       const note = effectiveStepNote(state, state.selectedTrack, absolute);
@@ -302,6 +340,7 @@ function keyInfo(i) {
       return {
         label: active ? `${absolute + 1}\n${noteName(note)}${tags.length ? ` ${tags.join(' ')}` : ''}` : String(absolute + 1),
         active,
+        disabled: false,
         selected: absolute === selectedStep,
         playhead: playing && absolute === playhead,
         notes: [],
@@ -330,11 +369,13 @@ function renderSurface() {
   for (let i = 0; i < 16; i++) {
     const info = keyInfo(i);
     const b = document.createElement('button');
-    b.className = `key ${info.active ? 'active' : ''} ${info.selected ? 'selected' : ''} ${info.playhead ? 'playhead' : ''}`;
+    b.className = `key ${info.active ? 'active' : ''} ${info.selected ? 'selected' : ''} ${info.playhead ? 'playhead' : ''} ${info.disabled ? 'disabled-step' : ''}`;
     b.innerText = info.label;
+    b.disabled = Boolean(info.disabled);
     const id = `k${i}`;
     const down = (e) => {
       e.preventDefault();
+      if (info.disabled) return;
       b.classList.add('playing');
       if (state.mode === 'SEQ') {
         selectedStep = state.page * 16 + i;
@@ -391,14 +432,11 @@ function renderStepCcLocks(p, track, step) {
     const lock = p.ccLocks[slot];
     const row = document.createElement('label');
     row.className = 'lock-item';
-
     const enabled = document.createElement('input');
     enabled.type = 'checkbox';
     enabled.checked = lock !== null;
-
     const name = document.createElement('span');
     name.textContent = `K${slot + 1} · CC${state.ccNumbers[track][slot]}`;
-
     const value = document.createElement('input');
     value.className = 'mini';
     value.type = 'number';
@@ -406,10 +444,8 @@ function renderStepCcLocks(p, track, step) {
     value.max = '127';
     value.disabled = lock === null;
     value.value = String(lock === null ? state.ccValues[track][slot] : lock);
-
     enabled.onchange = () => {
-      const next = enabled.checked ? Number(value.value) : null;
-      setStepCcLock(state, track, step, slot, next);
+      setStepCcLock(state, track, step, slot, enabled.checked ? Number(value.value) : null);
       persist();
       renderStepEditor();
       renderSurface();
@@ -422,7 +458,6 @@ function renderStepCcLocks(p, track, step) {
       renderStepEditor();
       renderSurface();
     };
-
     row.append(enabled, name, value);
     stepCcLocksEl.append(row);
   }
@@ -434,10 +469,11 @@ function renderStepEditor() {
   if (!show) return;
 
   const track = state.selectedTrack;
-  const step = Math.max(0, Math.min(63, selectedStep));
+  const step = Math.min(Math.max(0, selectedStep), state.trackLengths[track] - 1);
+  selectedStep = step;
   const p = stepParam(state, track, step);
   const effective = effectiveStepNote(state, track, step);
-  $('stepTitle').textContent = `T${track + 1} · STEP ${step + 1}`;
+  $('stepTitle').textContent = `T${track + 1} · STEP ${step + 1}/${state.trackLengths[track]}`;
   stepEnabledEl.checked = state.steps[track][step];
   stepUseDefaultEl.checked = p.note === null;
   stepNoteEl.disabled = p.note === null;
@@ -457,23 +493,30 @@ function renderTransport() {
   seqNoteEl.value = String(state.seqNotes[state.selectedTrack]);
   $('seqNoteName').textContent = noteName(state.seqNotes[state.selectedTrack]);
   followEl.checked = state.follow;
-  $('playPos').textContent = playhead >= 0 ? `STEP ${String(playhead + 1).padStart(2, '0')}` : 'STEP --';
+  const len = state.trackLengths[state.selectedTrack];
+  $('playPos').textContent = playhead >= 0 ? `T${state.selectedTrack + 1} ${String(playhead + 1).padStart(2, '0')}/${len}` : `T${state.selectedTrack + 1} --/${len}`;
 }
 
 function renderScreen() {
-  const ch = state.channels[state.selectedTrack];
-  $('screenMain').textContent = `TRACK ${state.selectedTrack + 1} · ${state.mode}`;
-  $('screenSub').textContent = `${ch ? `CH ${ch}` : 'MIDI OFF'} · ${state.tempo} BPM · ROOT ${ROOTS[state.root]} · ${state.scale.toUpperCase()} · PAGE ${state.page + 1}/4`;
-  const v = state.ccValues[state.selectedTrack][0];
+  const t = state.selectedTrack;
+  const ch = state.channels[t];
+  const target = state.trackTargets[t];
+  $('screenMain').textContent = `TRACK ${t + 1} · ${state.mode}`;
+  $('screenSub').textContent = `${target} · ${ch ? `CH ${ch}` : 'MIDI OFF'} · LEN ${state.trackLengths[t]} · ${state.tempo} BPM · PAGE ${state.page + 1}/${maxPageForTrack(state, t) + 1}`;
+  const v = state.ccValues[t][0];
   $('screenValue').textContent = playing && playhead >= 0
-    ? `▶ ${String(playhead + 1).padStart(2, '0')}/64`
+    ? `▶ ${String(playhead + 1).padStart(2, '0')}/${state.trackLengths[t]}`
     : `CC${ccNumber(state, 0)} ${String(v).padStart(3, '0')}`;
-  $('pageLabel').textContent = `${state.page * 16 + 1}–${state.page * 16 + 16}`;
+  const start = state.page * 16 + 1;
+  const end = Math.min(state.page * 16 + 16, state.trackLengths[t]);
+  $('pageLabel').textContent = `${start}–${end} / LEN ${state.trackLengths[t]}`;
 }
 
 function render() {
+  normalizeViewForTrack();
   renderModes();
   renderTracks();
+  renderTrackSetup();
   renderCcs();
   renderDrumEditor();
   renderStepEditor();
@@ -521,7 +564,7 @@ $('stop').onclick = () => stopTransport();
 
 tempoEl.onchange = () => {
   const wasPlaying = playing;
-  const resumeAt = playhead >= 0 ? (playhead + 1) % 64 : 0;
+  const resumeAt = transportTick >= 0 ? transportTick + 1 : 0;
   const tempo = setTempo(state, tempoEl.value);
   tempoEl.value = String(tempo);
   persist();
@@ -544,6 +587,35 @@ seqNoteEl.onchange = () => {
 
 followEl.onchange = () => {
   state.follow = followEl.checked;
+  persist();
+};
+
+trackLengthEl.onchange = () => {
+  const len = setTrackLength(state, state.selectedTrack, trackLengthEl.value);
+  trackLengthEl.value = String(len);
+  normalizeViewForTrack();
+  if (playing && transportTick >= 0) playhead = trackLocalStep(state, state.selectedTrack, transportTick);
+  persist();
+  render();
+};
+
+trackTargetEl.onchange = () => {
+  stopSequencerNotes();
+  stopAllHeld();
+  setTrackTarget(state, state.selectedTrack, trackTargetEl.value);
+  persist();
+  render();
+};
+
+internalEngineEl.onchange = () => {
+  setInternalEngine(state, state.selectedTrack, internalEngineEl.value);
+  persist();
+  renderTrackSetup();
+  renderScreen();
+};
+
+internalSoundEl.onchange = () => {
+  internalSoundEl.value = String(setInternalSound(state, state.selectedTrack, internalSoundEl.value));
   persist();
 };
 
@@ -570,32 +642,11 @@ stepNoteEl.onchange = () => {
   renderSurface();
 };
 
-stepVelocityEl.onchange = () => {
-  stepVelocityEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'velocity', stepVelocityEl.value));
-  persist();
-};
-
-stepGateEl.onchange = () => {
-  stepGateEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'gate', stepGateEl.value));
-  persist();
-};
-
-stepProbabilityEl.onchange = () => {
-  stepProbabilityEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'probability', stepProbabilityEl.value));
-  persist();
-};
-
-stepRatchetEl.onchange = () => {
-  stepRatchetEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'ratchet', stepRatchetEl.value));
-  persist();
-  renderSurface();
-};
-
-stepMicroEl.onchange = () => {
-  stepMicroEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'micro', stepMicroEl.value));
-  persist();
-  renderSurface();
-};
+stepVelocityEl.onchange = () => { stepVelocityEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'velocity', stepVelocityEl.value)); persist(); };
+stepGateEl.onchange = () => { stepGateEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'gate', stepGateEl.value)); persist(); };
+stepProbabilityEl.onchange = () => { stepProbabilityEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'probability', stepProbabilityEl.value)); persist(); };
+stepRatchetEl.onchange = () => { stepRatchetEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'ratchet', stepRatchetEl.value)); persist(); renderSurface(); };
+stepMicroEl.onchange = () => { stepMicroEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'micro', stepMicroEl.value)); persist(); renderSurface(); };
 
 $('reset').onclick = () => {
   if (!window.confirm('Reset Browser Companion mappings, steps and settings?')) return;
@@ -616,19 +667,23 @@ channelEl.onchange = () => {
   renderScreen();
 };
 
+TRACK_TARGETS.forEach((target) => trackTargetEl.add(new Option(target, target)));
+INTERNAL_ENGINES.forEach((engine) => internalEngineEl.add(new Option(engine, engine)));
 ROOTS.forEach((name, i) => rootEl.add(new Option(name, String(i))));
 Object.keys(SCALES).forEach((name) => scaleEl.add(new Option(name, name)));
 rootEl.onchange = () => { stopAllHeld(); state.root = Number(rootEl.value); persist(); render(); };
 scaleEl.onchange = () => { stopAllHeld(); state.scale = scaleEl.value; persist(); render(); };
 
 $('pagePrev').onclick = () => {
-  state.page = (state.page + 3) % 4;
+  const max = maxPageForTrack(state, state.selectedTrack);
+  state.page = state.page <= 0 ? max : state.page - 1;
   selectedStep = state.page * 16;
   persist();
   render();
 };
 $('pageNext').onclick = () => {
-  state.page = (state.page + 1) % 4;
+  const max = maxPageForTrack(state, state.selectedTrack);
+  state.page = state.page >= max ? 0 : state.page + 1;
   selectedStep = state.page * 16;
   persist();
   render();

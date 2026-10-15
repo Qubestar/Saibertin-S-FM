@@ -1,6 +1,8 @@
 export const MODES = ['KEYS', 'SCALE', 'CHORD', 'DRUM', 'SEQ'];
 export const DEFAULT_CCS = [74, 71, 73, 91];
-export const STORAGE_VERSION = 3;
+export const STORAGE_VERSION = 4;
+export const TRACK_TARGETS = ['MIDI', 'INTERNAL', 'BOTH'];
+export const INTERNAL_ENGINES = ['ANALOG', 'DIGITAL', 'PHASE', 'LOFI', 'SAMPLE', 'VOICE', 'TRIO', 'WHEEL', 'GRAIN', 'FM6', 'PHYS', 'NOISE'];
 
 export const SCALES = {
   Major: [0, 2, 4, 5, 7, 9, 11],
@@ -46,6 +48,10 @@ export function createState() {
     steps: Array.from({ length: 4 }, () => Array(64).fill(false)),
     stepParams: Array.from({ length: 4 }, () => Array.from({ length: 64 }, defaultStepParam)),
     seqNotes: [60, 64, 67, 36],
+    trackLengths: [64, 64, 64, 64],
+    trackTargets: ['MIDI', 'MIDI', 'MIDI', 'MIDI'],
+    internalEngines: ['ANALOG', 'DIGITAL', 'PHASE', 'SAMPLE'],
+    internalSounds: [0, 0, 0, 0],
     tempo: 120,
     follow: true,
     page: 0,
@@ -122,8 +128,45 @@ export function setTempo(state, value) {
   return state.tempo;
 }
 
+export function setTrackLength(state, track, value) {
+  const t = clampInt(track, 0, 3, 0);
+  state.trackLengths[t] = clampInt(value, 1, 64, 64);
+  return state.trackLengths[t];
+}
+
+export function setTrackTarget(state, track, value) {
+  const t = clampInt(track, 0, 3, 0);
+  state.trackTargets[t] = TRACK_TARGETS.includes(value) ? value : 'MIDI';
+  return state.trackTargets[t];
+}
+
+export function setInternalEngine(state, track, value) {
+  const t = clampInt(track, 0, 3, 0);
+  state.internalEngines[t] = INTERNAL_ENGINES.includes(value) ? value : 'ANALOG';
+  return state.internalEngines[t];
+}
+
+export function setInternalSound(state, track, value) {
+  const t = clampInt(track, 0, 3, 0);
+  state.internalSounds[t] = clampInt(value, 0, 152, 0);
+  return state.internalSounds[t];
+}
+
+export function trackLocalStep(state, track, tick) {
+  const t = clampInt(track, 0, 3, 0);
+  const len = setTrackLength(state, t, state.trackLengths[t]);
+  const n = Math.max(0, Math.floor(Number(tick) || 0));
+  return n % len;
+}
+
+export function maxPageForTrack(state, track) {
+  const t = clampInt(track, 0, 3, 0);
+  return Math.max(0, Math.ceil(state.trackLengths[t] / 16) - 1);
+}
+
 export function toggleStep(state, visibleIndex) {
   const absolute = state.page * 16 + visibleIndex;
+  if (absolute >= state.trackLengths[state.selectedTrack]) return false;
   state.steps[state.selectedTrack][absolute] = !state.steps[state.selectedTrack][absolute];
   return state.steps[state.selectedTrack][absolute];
 }
@@ -131,12 +174,15 @@ export function toggleStep(state, visibleIndex) {
 export function setStepEnabled(state, track, step, enabled) {
   const t = clampInt(track, 0, 3, 0);
   const s = clampInt(step, 0, 63, 0);
+  if (s >= state.trackLengths[t]) return false;
   state.steps[t][s] = Boolean(enabled);
   return state.steps[t][s];
 }
 
 export function visibleStep(state, visibleIndex) {
-  return state.steps[state.selectedTrack][state.page * 16 + visibleIndex];
+  const step = state.page * 16 + visibleIndex;
+  if (step >= state.trackLengths[state.selectedTrack]) return false;
+  return state.steps[state.selectedTrack][step];
 }
 
 export function stepParam(state, track, step) {
@@ -199,19 +245,27 @@ export function stepDurationMs(tempo) {
   return 60000 / clampInt(tempo, 30, 300, 120) / 4;
 }
 
-export function sequenceEventsAtStep(state, stepIndex, random = Math.random) {
-  const step = clampInt(stepIndex, 0, 63, 0);
+export function sequenceEventsAtTick(state, tick, random = Math.random) {
   const events = [];
   for (let track = 0; track < 4; track++) {
+    const step = trackLocalStep(state, track, tick);
     if (!state.steps[track][step]) continue;
+    const target = state.trackTargets[track];
+    const emitMidi = target === 'MIDI' || target === 'BOTH';
+    const emitInternal = target === 'INTERNAL' || target === 'BOTH';
     const ch = state.channels[track];
-    if (ch < 1 || ch > 16) continue;
+    if (emitMidi && (ch < 1 || ch > 16) && !emitInternal) continue;
     const p = stepParam(state, track, step);
     if (p.probability < 100 && random() * 100 >= p.probability) continue;
     events.push({
       track,
       step,
-      channel: ch - 1,
+      target,
+      emitMidi: emitMidi && ch >= 1 && ch <= 16,
+      emitInternal,
+      channel: ch >= 1 && ch <= 16 ? ch - 1 : null,
+      engine: state.internalEngines[track],
+      sound: state.internalSounds[track],
       note: effectiveStepNote(state, track, step),
       velocity: p.velocity,
       gate: p.gate,
@@ -226,6 +280,10 @@ export function sequenceEventsAtStep(state, stepIndex, random = Math.random) {
     });
   }
   return events;
+}
+
+export function sequenceEventsAtStep(state, stepIndex, random = Math.random) {
+  return sequenceEventsAtTick(state, stepIndex, random);
 }
 
 export function restoreState(raw) {
@@ -261,6 +319,18 @@ export function restoreState(raw) {
   if (Array.isArray(raw.seqNotes))
     s.seqNotes = midiRow(raw.seqNotes, s.seqNotes, 4);
 
+  if (Array.isArray(raw.trackLengths))
+    s.trackLengths = Array.from({ length: 4 }, (_, t) => clampInt(raw.trackLengths[t], 1, 64, 64));
+
+  if (Array.isArray(raw.trackTargets))
+    s.trackTargets = Array.from({ length: 4 }, (_, t) => TRACK_TARGETS.includes(raw.trackTargets[t]) ? raw.trackTargets[t] : 'MIDI');
+
+  if (Array.isArray(raw.internalEngines))
+    s.internalEngines = Array.from({ length: 4 }, (_, t) => INTERNAL_ENGINES.includes(raw.internalEngines[t]) ? raw.internalEngines[t] : s.internalEngines[t]);
+
+  if (Array.isArray(raw.internalSounds))
+    s.internalSounds = Array.from({ length: 4 }, (_, t) => clampInt(raw.internalSounds[t], 0, 152, 0));
+
   if (Array.isArray(raw.steps))
     s.steps = Array.from({ length: 4 }, (_, t) => boolRow(raw.steps[t], 64));
 
@@ -268,6 +338,7 @@ export function restoreState(raw) {
     s.stepParams = Array.from({ length: 4 }, (_, t) =>
       Array.from({ length: 64 }, (_, i) => restoreStepParam(raw.stepParams?.[t]?.[i])));
 
+  s.page = Math.min(s.page, maxPageForTrack(s, s.selectedTrack));
   return s;
 }
 
