@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import {
-  SCENE_COUNT, SLOT_NAMES, normalizeSlotMap, normalizeScene,
+  SCENE_COUNT, SLOT_NAMES, SCENE_QUANTIZE, normalizeSlotMap, normalizeScene,
   parseSceneChain, formatSceneChain, nextSceneCursor, sceneAtCursor,
+  normalizeSceneQuantize, sceneBoundarySteps, isSceneBoundary,
 } from './scene-model.js';
 
 assert.equal(SCENE_COUNT, 8);
 assert.deepEqual(SLOT_NAMES, ['A', 'B', 'C', 'D']);
+assert.deepEqual(SCENE_QUANTIZE, ['BAR1', 'BAR2', 'PATTERN']);
 const map = normalizeSlotMap(['B', 'C', 'Z']);
 assert.equal(map.length, 64);
 assert.deepEqual(map.slice(0, 4), ['B', 'C', 'A', 'A']);
@@ -20,4 +22,18 @@ assert.equal(nextSceneCursor([0, 1, 2], 0, 1), 1);
 assert.equal(nextSceneCursor([0, 1, 2], 2, 1), 0);
 assert.equal(nextSceneCursor([0, 1, 2], 0, -1), 2);
 assert.equal(sceneAtCursor([3, 5], 1), 5);
+
+assert.equal(normalizeSceneQuantize('BAR2'), 'BAR2');
+assert.equal(normalizeSceneQuantize('???'), 'BAR1');
+const timingState = { trackLengths: [16, 12, 7, 32] };
+assert.equal(sceneBoundarySteps(timingState, 'BAR1'), 16);
+assert.equal(sceneBoundarySteps(timingState, 'BAR2'), 32);
+assert.equal(sceneBoundarySteps(timingState, 'PATTERN'), 32);
+assert.equal(isSceneBoundary(0, timingState, 'BAR1'), true);
+assert.equal(isSceneBoundary(15, timingState, 'BAR1'), false);
+assert.equal(isSceneBoundary(16, timingState, 'BAR1'), true);
+assert.equal(isSceneBoundary(31, timingState, 'BAR2'), false);
+assert.equal(isSceneBoundary(32, timingState, 'BAR2'), true);
+assert.equal(isSceneBoundary(64, timingState, 'PATTERN'), true);
+assert.equal(isSceneBoundary(48, timingState, 'PATTERN'), false);
 console.log('Saibertin S-FM scene model: ok');
