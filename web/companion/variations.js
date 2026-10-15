@@ -3,6 +3,7 @@ import { VARIATIONS, applyVariation } from './variation-model.js';
 
 const MUSIC_KEY = 'saibertin-s-fm-companion-v1';
 const SLOT_KEY = 'saibertin-s-fm-pattern-slots-v1';
+const SCENE_KEY = 'saibertin-s-fm-scenes-v1';
 const UI_KEY = 'saibertin-s-fm-variation-ui-v1';
 const SLOT_NAMES = ['A', 'B', 'C', 'D'];
 
@@ -14,16 +15,22 @@ function readState() {
 }
 function writeState(state) { localStorage.setItem(MUSIC_KEY, JSON.stringify(snapshotState(state))); }
 
-function currentSlotContext() {
+function currentContext() {
   const state = readState();
   const track = state.selectedTrack;
   let slot = 'A';
+  let scene = 0;
   try {
     const raw = JSON.parse(localStorage.getItem(SLOT_KEY) || 'null');
     const active = raw?.tracks?.[String(track)]?.active;
     if (SLOT_NAMES.includes(active)) slot = active;
   } catch {}
-  return { track, slot, key: `${track}:${slot}` };
+  try {
+    const raw = JSON.parse(localStorage.getItem(SCENE_KEY) || 'null');
+    const active = Number(raw?.active);
+    if (Number.isInteger(active) && active >= 0 && active < 8) scene = active;
+  } catch {}
+  return { scene, track, slot, key: `${scene}:${track}:${slot}` };
 }
 
 function readUiStore() {
@@ -33,22 +40,21 @@ function readUiStore() {
   } catch {}
   return {};
 }
-
 function readUi() {
   const fallback = { variation: 'fill-1beat', scope: 'PAGE' };
   const raw = readUiStore();
-  const { key } = currentSlotContext();
+  const { key } = currentContext();
   const legacy = raw.variation || raw.scope ? { variation: raw.variation, scope: raw.scope } : null;
-  const saved = raw.bySlot?.[key] || legacy || null;
+  const saved = raw.byContext?.[key] || raw.bySlot?.[key.split(':').slice(1).join(':')] || legacy || null;
   return { ...fallback, ...(saved || {}) };
 }
 function writeUi() {
   try {
     const raw = readUiStore();
-    const { key } = currentSlotContext();
-    const bySlot = raw.bySlot && typeof raw.bySlot === 'object' ? { ...raw.bySlot } : {};
-    bySlot[key] = { variation: variationEl.value, scope: scopeEl.value };
-    localStorage.setItem(UI_KEY, JSON.stringify({ version: 2, bySlot }));
+    const { key } = currentContext();
+    const byContext = raw.byContext && typeof raw.byContext === 'object' ? { ...raw.byContext } : {};
+    byContext[key] = { variation: variationEl.value, scope: scopeEl.value };
+    localStorage.setItem(UI_KEY, JSON.stringify({ version: 3, byContext }));
   } catch {}
 }
 
@@ -70,7 +76,7 @@ panel.innerHTML = `
     <button class="btn variation-apply" id="variationApply">Apply variation</button>
     <span class="variation-tip">Tip: duplicate Pattern A → B first when you want a safe fill/variation version.</span>
   </div>
-  <div class="status" id="variationStatus" style="margin-top:8px">Transforms trigger/velocity/ratchet data on the selected track; routing is untouched.</div>
+  <div class="status" id="variationStatus" style="margin-top:8px">Transform choice is remembered per Scene + Track + Pattern slot.</div>
 `;
 
 const slots = document.querySelector('.pattern-slots');
@@ -90,11 +96,10 @@ for (const item of VARIATIONS) {
 
 function renderContextStatus(message = '') {
   if (message) { statusEl.textContent = message; return; }
-  const { track, slot } = currentSlotContext();
+  const { scene, track, slot } = currentContext();
   const name = VARIATIONS.find((v) => v.id === variationEl.value)?.name || variationEl.value;
-  statusEl.textContent = `${trackLabel(track)} · Pattern ${slot} · selected ${name} · ${scopeEl.value === 'TRACK' ? 'whole track' : 'current page'}. Transform is remembered separately for this slot.`;
+  statusEl.textContent = `Scene ${scene + 1} · ${trackLabel(track)} · Pattern ${slot} · ${name} · ${scopeEl.value === 'TRACK' ? 'whole track' : 'current page'}`;
 }
-
 function loadContextUi(message = '') {
   const saved = readUi();
   variationEl.value = VARIATIONS.some((v) => v.id === saved.variation) ? saved.variation : 'fill-1beat';
@@ -108,13 +113,13 @@ document.getElementById('variationApply').onclick = () => {
   document.getElementById('stop')?.click();
   const state = readState();
   const track = state.selectedTrack;
-  const { slot } = currentSlotContext();
+  const { scene, slot } = currentContext();
   applyVariation(state, track, variationEl.value, scopeEl.value);
   writeState(state); writeUi();
   const name = VARIATIONS.find((v) => v.id === variationEl.value)?.name || variationEl.value;
-  renderContextStatus(`${name} → ${trackLabel(track)} · Pattern ${slot} · ${scopeEl.value === 'TRACK' ? 'whole track' : `page ${state.page + 1}`}. Reloading view…`);
+  renderContextStatus(`${name} → Scene ${scene + 1} · ${trackLabel(track)} · Pattern ${slot}. Reloading view…`);
   setTimeout(() => location.reload(), 90);
 };
 
-window.addEventListener('saibertin:scene-recalled', () => loadContextUi('Variation context updated for the recalled scene.'));
+window.addEventListener('saibertin:scene-recalled', () => loadContextUi('Variation context updated for recalled scene.'));
 loadContextUi();
