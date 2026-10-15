@@ -11,11 +11,22 @@ export function normalizeSlotMap(raw) {
   return Array.from({ length: 64 }, (_, i) => SLOT_NAMES.includes(raw?.[i]) ? raw[i] : 'A');
 }
 
+export function normalizeScenePatterns(raw) {
+  return Array.from({ length: 64 }, (_, i) => {
+    const value = raw?.[i];
+    return value && typeof value === 'object' ? value : null;
+  });
+}
+
 export function normalizeScene(raw, index = 0) {
   const fallbackName = `Scene ${clampInt(index, 0, SCENE_COUNT - 1, 0) + 1}`;
   if (!raw || typeof raw !== 'object') return null;
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 32) : fallbackName;
-  return { name, slots: normalizeSlotMap(raw.slots) };
+  return {
+    name,
+    slots: normalizeSlotMap(raw.slots),
+    patterns: normalizeScenePatterns(raw.patterns),
+  };
 }
 
 export function parseSceneChain(value) {
