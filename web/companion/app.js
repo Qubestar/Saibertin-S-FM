@@ -1,7 +1,7 @@
 import {
   MODES, SCALES, ROOTS, DEGREE_NAMES, DRUMS, createState, restoreState, snapshotState,
   setCc, ccNumber, setCcNumber, setDrumNote, setSeqNote, setTempo,
-  toggleStep, setStepEnabled, visibleStep, stepParam, effectiveStepNote, setStepParam,
+  toggleStep, setStepEnabled, visibleStep, stepParam, effectiveStepNote, setStepParam, setStepCcLock,
   scaleNote, chordNotes, noteName, stepDurationMs, sequenceEventsAtStep,
 } from './model.js';
 
@@ -14,8 +14,7 @@ const held = new Map();
 let playing = false;
 let playhead = -1;
 let selectedStep = state.page * 16;
-let transportTimer = null;
-let nextTickAt = 0;
+let plannerTimer = null;
 const seqActive = new Map();
 const seqTimers = new Set();
 
@@ -41,6 +40,8 @@ const stepVelocityEl = $('stepVelocity');
 const stepGateEl = $('stepGate');
 const stepProbabilityEl = $('stepProbability');
 const stepRatchetEl = $('stepRatchet');
+const stepMicroEl = $('stepMicro');
+const stepCcLocksEl = $('stepCcLocks');
 
 function loadState() {
   try {
@@ -111,6 +112,7 @@ function trackedTimeout(fn, delay) {
 function stopSequencerNotes() {
   for (const timer of seqTimers) clearTimeout(timer);
   seqTimers.clear();
+  plannerTimer = null;
   for (const event of seqActive.values()) noteOff(event.note, event.channel);
   seqActive.clear();
 }
@@ -133,55 +135,67 @@ function fireSequenceHit(event, hitSpan) {
   }, gateMs);
 }
 
-function triggerSequenceEvent(event) {
-  const hits = Math.max(1, Math.min(4, event.ratchet || 1));
-  const span = stepDurationMs(state.tempo) / hits;
-  for (let i = 0; i < hits; i++) {
-    if (i === 0) fireSequenceHit(event, span);
-    else trackedTimeout(() => fireSequenceHit(event, span), i * span);
-  }
+function sendStepLocks(event) {
+  for (const lock of event.ccLocks || [])
+    send([0xB0 | event.channel, lock.cc & 127, lock.value & 127]);
 }
 
-function runTransportStep() {
-  playhead = (playhead + 1) % 64;
-  for (const event of sequenceEventsAtStep(state, playhead)) triggerSequenceEvent(event);
+function scheduleSequenceEvent(event, nominalAt, stepMs) {
+  const eventAt = nominalAt + stepMs * ((event.micro || 0) / 100);
+  trackedTimeout(() => {
+    if (!playing) return;
+    sendStepLocks(event);
+    const hits = Math.max(1, Math.min(4, event.ratchet || 1));
+    const span = stepMs / hits;
+    for (let i = 0; i < hits; i++) {
+      if (i === 0) fireSequenceHit(event, span);
+      else trackedTimeout(() => { if (playing) fireSequenceHit(event, span); }, i * span);
+    }
+  }, eventAt - performance.now());
+}
 
+function showPlayhead(step) {
+  if (!playing) return;
+  playhead = step;
   if (state.follow) {
     const page = Math.floor(playhead / 16);
     if (page !== state.page) state.page = page;
   }
-
   renderTransport();
   renderScreen();
   if (state.mode === 'SEQ') renderSurface();
 }
 
-function scheduleTransport() {
+function planTransportStep(step, nominalAt) {
   if (!playing) return;
-  const delay = Math.max(0, nextTickAt - performance.now());
-  transportTimer = setTimeout(() => {
-    if (!playing) return;
-    runTransportStep();
-    nextTickAt += stepDurationMs(state.tempo);
-    scheduleTransport();
-  }, delay);
+  const stepMs = stepDurationMs(state.tempo);
+
+  for (const event of sequenceEventsAtStep(state, step))
+    scheduleSequenceEvent(event, nominalAt, stepMs);
+
+  trackedTimeout(() => showPlayhead(step), nominalAt - performance.now());
+
+  // Plan the next step before its earliest allowed hit. With microtiming down to -50%,
+  // the next event may happen half a step before its nominal grid point.
+  const nextStep = (step + 1) % 64;
+  const nextNominalAt = nominalAt + stepMs;
+  const planAt = nominalAt + stepMs * 0.25;
+  plannerTimer = trackedTimeout(() => planTransportStep(nextStep, nextNominalAt), planAt - performance.now());
 }
 
-function startTransport() {
+function startTransport(startStep = 0) {
   if (playing) return;
   playing = true;
   playhead = -1;
-  nextTickAt = performance.now();
-  scheduleTransport();
+  const stepMs = stepDurationMs(state.tempo);
+  const firstNominalAt = performance.now() + stepMs * 0.55;
+  planTransportStep(Math.max(0, Math.min(63, startStep)), firstNominalAt);
   renderTransport();
   renderScreen();
 }
 
 function stopTransport({ persistPage = true } = {}) {
   playing = false;
-  if (transportTimer) clearTimeout(transportTimer);
-  transportTimer = null;
-  nextTickAt = 0;
   stopSequencerNotes();
   playhead = -1;
   if (persistPage) persist();
@@ -246,6 +260,7 @@ function renderCcs() {
       mapInput.value = String(mapped);
       persist();
       renderScreen();
+      renderStepEditor();
     };
     const valueEl = document.createElement('span');
     valueEl.textContent = String(v).padStart(3, '0');
@@ -280,8 +295,12 @@ function keyInfo(i) {
       const p = stepParam(state, state.selectedTrack, absolute);
       const active = visibleStep(state, i);
       const note = effectiveStepNote(state, state.selectedTrack, absolute);
+      const tags = [];
+      if (p.ratchet > 1) tags.push(`×${p.ratchet}`);
+      if (p.micro) tags.push(`${p.micro > 0 ? '+' : ''}${p.micro}%`);
+      if (p.ccLocks.some((v) => v !== null)) tags.push('CC');
       return {
-        label: active ? `${absolute + 1}\n${noteName(note)}${p.ratchet > 1 ? ` ×${p.ratchet}` : ''}` : String(absolute + 1),
+        label: active ? `${absolute + 1}\n${noteName(note)}${tags.length ? ` ${tags.join(' ')}` : ''}` : String(absolute + 1),
         active,
         selected: absolute === selectedStep,
         playhead: playing && absolute === playhead,
@@ -366,6 +385,49 @@ function renderDrumEditor() {
   }
 }
 
+function renderStepCcLocks(p, track, step) {
+  stepCcLocksEl.replaceChildren();
+  for (let slot = 0; slot < 4; slot++) {
+    const lock = p.ccLocks[slot];
+    const row = document.createElement('label');
+    row.className = 'lock-item';
+
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    enabled.checked = lock !== null;
+
+    const name = document.createElement('span');
+    name.textContent = `K${slot + 1} · CC${state.ccNumbers[track][slot]}`;
+
+    const value = document.createElement('input');
+    value.className = 'mini';
+    value.type = 'number';
+    value.min = '0';
+    value.max = '127';
+    value.disabled = lock === null;
+    value.value = String(lock === null ? state.ccValues[track][slot] : lock);
+
+    enabled.onchange = () => {
+      const next = enabled.checked ? Number(value.value) : null;
+      setStepCcLock(state, track, step, slot, next);
+      persist();
+      renderStepEditor();
+      renderSurface();
+    };
+    value.onchange = () => {
+      const next = setStepCcLock(state, track, step, slot, value.value);
+      value.value = String(next);
+      enabled.checked = true;
+      persist();
+      renderStepEditor();
+      renderSurface();
+    };
+
+    row.append(enabled, name, value);
+    stepCcLocksEl.append(row);
+  }
+}
+
 function renderStepEditor() {
   const show = state.mode === 'SEQ';
   stepEditorEl.classList.toggle('hidden', !show);
@@ -385,6 +447,8 @@ function renderStepEditor() {
   stepGateEl.value = String(p.gate);
   stepProbabilityEl.value = String(p.probability);
   stepRatchetEl.value = String(p.ratchet);
+  stepMicroEl.value = String(p.micro);
+  renderStepCcLocks(p, track, step);
 }
 
 function renderTransport() {
@@ -452,17 +516,18 @@ outputEl.onchange = () => {
   $('midiStatus').textContent = output ? `OUT: ${output.name}` : 'MIDI ready';
 };
 
-$('play').onclick = startTransport;
+$('play').onclick = () => startTransport(0);
 $('stop').onclick = () => stopTransport();
 
 tempoEl.onchange = () => {
+  const wasPlaying = playing;
+  const resumeAt = playhead >= 0 ? (playhead + 1) % 64 : 0;
   const tempo = setTempo(state, tempoEl.value);
   tempoEl.value = String(tempo);
   persist();
-  if (playing) {
-    if (transportTimer) clearTimeout(transportTimer);
-    nextTickAt = performance.now() + stepDurationMs(state.tempo);
-    scheduleTransport();
+  if (wasPlaying) {
+    stopTransport({ persistPage: false });
+    startTransport(resumeAt);
   }
   renderScreen();
 };
@@ -522,6 +587,12 @@ stepProbabilityEl.onchange = () => {
 
 stepRatchetEl.onchange = () => {
   stepRatchetEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'ratchet', stepRatchetEl.value));
+  persist();
+  renderSurface();
+};
+
+stepMicroEl.onchange = () => {
+  stepMicroEl.value = String(setStepParam(state, state.selectedTrack, selectedStep, 'micro', stepMicroEl.value));
   persist();
   renderSurface();
 };
