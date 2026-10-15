@@ -19,19 +19,22 @@ function writeState(state) { localStorage.setItem(MUSIC_KEY, JSON.stringify(snap
 function readSlots() {
   try {
     const raw = JSON.parse(localStorage.getItem(SLOT_KEY) || 'null');
-    return raw && typeof raw === 'object' ? { version: 1, tracks: raw.tracks || {}, clipboard: raw.clipboard || null } : { version: 1, tracks: {}, clipboard: null };
+    return raw && typeof raw === 'object'
+      ? { version: 1, tracks: raw.tracks || {}, clipboard: raw.clipboard || null }
+      : { version: 1, tracks: {}, clipboard: null };
   } catch { return { version: 1, tracks: {}, clipboard: null }; }
 }
 function writeSlots(slots) { localStorage.setItem(SLOT_KEY, JSON.stringify(slots)); }
 function readScenes() {
-  const fallback = { version: 2, scenes: Array(SCENE_COUNT).fill(null), active: 0, chain: [0], cursor: 0, auto: false, quantize: 'BAR1' };
+  const fallback = { version: 3, scenes: Array(SCENE_COUNT).fill(null), active: 0, chain: [0], cursor: 0, auto: false, quantize: 'BAR1' };
   try {
     const raw = JSON.parse(localStorage.getItem(SCENE_KEY) || 'null');
     if (!raw || typeof raw !== 'object') return fallback;
     const scenes = Array.from({ length: SCENE_COUNT }, (_, i) => normalizeScene(raw.scenes?.[i], i));
     const chain = parseSceneChain((raw.chain || [0]).map((v) => Number(v) + 1));
     return {
-      version: 2, scenes,
+      version: 3,
+      scenes,
       active: Math.max(0, Math.min(SCENE_COUNT - 1, Number(raw.active) || 0)),
       chain,
       cursor: Math.max(0, Math.min(chain.length - 1, Number(raw.cursor) || 0)),
@@ -59,6 +62,17 @@ function syncAllActivePatterns(state, slots) {
   }
 }
 
+function snapshotCurrentScene(index, state = readState(), slots = readSlots()) {
+  const scene = sceneStore.scenes[index];
+  if (!scene) return false;
+  syncAllActivePatterns(state, slots);
+  scene.slots = Array.from({ length: 64 }, (_, track) => ensureSlotEntry(slots, track).active);
+  scene.patterns = Array.from({ length: 64 }, (_, track) => clonePatternSnapshot(captureTrackPattern(state, track)));
+  writeSlots(slots);
+  writeScenes();
+  return true;
+}
+
 let transportRunning = false;
 let queuedScene = null;
 let lastPlannedTick = null;
@@ -72,7 +86,7 @@ document.head.append(style);
 const panel = document.createElement('div');
 panel.className = 'box scene-panel';
 panel.innerHTML = `
-  <div class="label">Scenes / pattern chain · 64-track slot maps</div>
+  <div class="label">Scenes / pattern chain · independent 64-track snapshots</div>
   <div class="scene-buttons" id="sceneButtons"></div>
   <div class="scene-grid">
     <label>Active scene name<input id="sceneName" maxlength="32" value="Scene 1"></label>
@@ -84,12 +98,12 @@ panel.innerHTML = `
     <span class="status" id="sceneQuantizeStatus">Changes are queued to a musical boundary.</span>
   </div>
   <div class="scene-actions">
-    <button class="btn scene-capture" id="sceneCapture">Capture current slot map</button>
+    <button class="btn scene-capture" id="sceneCapture">Capture / update scene</button>
     <button class="btn" id="scenePrev">◀ Chain prev</button>
     <button class="btn" id="sceneNext">Chain next ▶</button>
     <span class="scene-chain" id="sceneChainStatus">1</span>
   </div>
-  <div class="status" id="sceneStatus" style="margin-top:8px">Click an empty scene to capture the current A/B/C/D choices. Saved scenes recall instantly when stopped and quantize when transport is running.</div>
+  <div class="status" id="sceneStatus" style="margin-top:8px">Each scene owns its own sparse pattern data. Editing one scene no longer changes another scene that uses the same A/B/C/D slot.</div>
 `;
 
 const variation = document.querySelector('.variation-panel');
@@ -118,7 +132,7 @@ function renderScenes(message = '') {
     const b = document.createElement('button');
     b.className = `btn scene-btn ${sceneStore.active === i ? 'active' : ''} ${queuedScene === i ? 'queued' : ''} ${scene ? '' : 'empty'}`;
     b.textContent = scene ? `${i + 1} · ${scene.name}` : `${i + 1} · EMPTY`;
-    b.title = scene ? (transportRunning ? `Queue ${scene.name} for the next ${quantizeLabel()}` : `Recall ${scene.name}`) : 'Capture current pattern-slot map into this scene';
+    b.title = scene ? (transportRunning ? `Queue ${scene.name} for the next ${quantizeLabel()}` : `Recall ${scene.name}`) : 'Capture current independent pattern snapshot into this scene';
     b.onclick = () => scene ? requestScene(i) : captureScene(i);
     buttonsEl.append(b);
   }
@@ -137,19 +151,23 @@ function stopTransport() { document.getElementById('stop')?.click(); }
 
 function captureScene(index) {
   if (transportRunning) {
-    renderScenes(`Cannot capture an empty scene while transport is running. Stop first, then capture Scene ${index + 1}.`);
+    renderScenes(`Cannot capture Scene ${index + 1} while transport is running. Stop first.`);
     return false;
   }
   stopTransport();
   const state = readState();
   const slots = readSlots();
   syncAllActivePatterns(state, slots);
-  const slotMap = Array.from({ length: 64 }, (_, t) => ensureSlotEntry(slots, t).active);
   const old = sceneStore.scenes[index];
-  sceneStore.scenes[index] = { name: old?.name || `Scene ${index + 1}`, slots: slotMap };
+  sceneStore.scenes[index] = {
+    name: old?.name || `Scene ${index + 1}`,
+    slots: Array.from({ length: 64 }, (_, track) => ensureSlotEntry(slots, track).active),
+    patterns: Array.from({ length: 64 }, (_, track) => clonePatternSnapshot(captureTrackPattern(state, track))),
+  };
   sceneStore.active = index;
   writeSlots(slots); writeScenes();
-  renderScenes(`Captured Scene ${index + 1}: current A/B/C/D selection across all 64 tracks.`);
+  window.dispatchEvent(new CustomEvent('saibertin:scene-recalled', { detail: { sceneIndex: index, captured: true } }));
+  renderScenes(`Captured Scene ${index + 1}: independent pattern data saved for all 64 tracks.`);
   return true;
 }
 
@@ -161,17 +179,29 @@ function applySceneLive(index, message = '') {
   }
   const state = readState();
   const slots = readSlots();
-  syncAllActivePatterns(state, slots);
+
+  if (sceneStore.active !== index && sceneStore.scenes[sceneStore.active]) {
+    snapshotCurrentScene(sceneStore.active, state, slots);
+  } else {
+    syncAllActivePatterns(state, slots);
+  }
+
   for (let track = 0; track < 64; track++) {
     const entry = ensureSlotEntry(slots, track);
-    const targetSlot = PATTERN_SLOTS.includes(scene.slots[track]) ? scene.slots[track] : 'A';
-    if (!entry.slots[targetSlot]) {
-      const source = entry.slots[entry.active] || captureTrackPattern(state, track);
-      entry.slots[targetSlot] = clonePatternSnapshot(source);
+    const targetSlot = PATTERN_SLOTS.includes(scene.slots?.[track]) ? scene.slots[track] : 'A';
+    let snapshot = scene.patterns?.[track] || null;
+
+    if (!snapshot) {
+      snapshot = entry.slots[targetSlot] || entry.slots[entry.active] || captureTrackPattern(state, track);
+      if (!Array.isArray(scene.patterns)) scene.patterns = Array(64).fill(null);
+      scene.patterns[track] = clonePatternSnapshot(snapshot);
     }
-    applyTrackPattern(state, track, entry.slots[targetSlot]);
+
+    entry.slots[targetSlot] = clonePatternSnapshot(snapshot);
+    applyTrackPattern(state, track, snapshot);
     entry.active = targetSlot;
   }
+
   sceneStore.active = index;
   writeSlots(slots); writeState(state); writeScenes();
   window.dispatchEvent(new CustomEvent('saibertin:replace-state', { detail: { state, reason: 'scene', sceneIndex: index } }));
@@ -199,7 +229,13 @@ nameEl.onchange = () => {
   writeScenes(); renderScenes('Scene renamed.');
 };
 
-document.getElementById('sceneCapture').onclick = () => captureScene(sceneStore.active);
+document.getElementById('sceneCapture').onclick = () => {
+  const i = sceneStore.active;
+  if (sceneStore.scenes[i]) {
+    snapshotCurrentScene(i);
+    renderScenes(`Updated Scene ${i + 1}: current pattern data saved independently.`);
+  } else captureScene(i);
+};
 chainInputEl.onchange = () => {
   sceneStore.chain = parseSceneChain(chainInputEl.value);
   sceneStore.cursor = 0;
@@ -269,6 +305,12 @@ window.addEventListener('saibertin:transport-stop', () => {
   queuedScene = null;
   lastPlannedTick = null;
   renderScenes('Transport stopped. Scene recalls are immediate again.');
+});
+
+window.addEventListener('beforeunload', () => {
+  try {
+    if (!transportRunning && sceneStore.scenes[sceneStore.active]) snapshotCurrentScene(sceneStore.active);
+  } catch {}
 });
 
 renderScenes();
