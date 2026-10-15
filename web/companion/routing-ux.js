@@ -1,3 +1,5 @@
+import './performance.js';
+
 const midiPortEl = document.getElementById('midiPort');
 const channelEl = document.getElementById('channel');
 const targetEl = document.getElementById('trackTarget');
