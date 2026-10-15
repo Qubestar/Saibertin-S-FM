@@ -1,6 +1,7 @@
 import {
   MODES, SCALES, ROOTS, DEGREE_NAMES, DRUMS, createState, restoreState, snapshotState,
-  setCc, ccNumber, setCcNumber, setDrumNote, toggleStep, visibleStep, scaleNote, chordNotes, noteName,
+  setCc, ccNumber, setCcNumber, setDrumNote, setSeqNote, setTempo,
+  toggleStep, visibleStep, scaleNote, chordNotes, noteName, stepDurationMs, sequenceEventsAtStep,
 } from './model.js';
 
 const STORAGE_KEY = 'saibertin-s-fm-companion-v1';
@@ -8,6 +9,13 @@ let state = loadState();
 let midi = null;
 let output = null;
 const held = new Map();
+
+let playing = false;
+let playhead = -1;
+let transportTimer = null;
+let nextTickAt = 0;
+const seqActive = new Map();
+const seqOffTimers = new Map();
 
 const $ = (id) => document.getElementById(id);
 const modesEl = $('modes');
@@ -20,6 +28,9 @@ const rootEl = $('root');
 const scaleEl = $('scale');
 const drumEditorEl = $('drumEditor');
 const drumMapEl = $('drumMap');
+const tempoEl = $('tempo');
+const seqNoteEl = $('seqNote');
+const followEl = $('follow');
 
 function loadState() {
   try {
@@ -76,6 +87,82 @@ function startHeld(id, notes) {
   if (ch === null) return;
   notes.forEach((note) => noteOn(note, 100, ch));
   held.set(id, { ch, notes: [...notes] });
+}
+
+function stopSequencerNotes() {
+  for (const timer of seqOffTimers.values()) clearTimeout(timer);
+  seqOffTimers.clear();
+  for (const event of seqActive.values()) noteOff(event.note, event.channel);
+  seqActive.clear();
+}
+
+function triggerSequenceEvent(event) {
+  const priorTimer = seqOffTimers.get(event.track);
+  if (priorTimer) clearTimeout(priorTimer);
+  const prior = seqActive.get(event.track);
+  if (prior) noteOff(prior.note, prior.channel);
+
+  noteOn(event.note, event.velocity, event.channel);
+  seqActive.set(event.track, event);
+
+  const gateMs = Math.max(20, stepDurationMs(state.tempo) * 0.55);
+  const timer = setTimeout(() => {
+    const current = seqActive.get(event.track);
+    if (current === event) {
+      noteOff(event.note, event.channel);
+      seqActive.delete(event.track);
+    }
+    seqOffTimers.delete(event.track);
+  }, gateMs);
+  seqOffTimers.set(event.track, timer);
+}
+
+function runTransportStep() {
+  playhead = (playhead + 1) % 64;
+  for (const event of sequenceEventsAtStep(state, playhead)) triggerSequenceEvent(event);
+
+  if (state.follow) {
+    const page = Math.floor(playhead / 16);
+    if (page !== state.page) state.page = page;
+  }
+
+  renderTransport();
+  renderScreen();
+  if (state.mode === 'SEQ') renderSurface();
+}
+
+function scheduleTransport() {
+  if (!playing) return;
+  const delay = Math.max(0, nextTickAt - performance.now());
+  transportTimer = setTimeout(() => {
+    if (!playing) return;
+    runTransportStep();
+    nextTickAt += stepDurationMs(state.tempo);
+    scheduleTransport();
+  }, delay);
+}
+
+function startTransport() {
+  if (playing) return;
+  playing = true;
+  playhead = -1;
+  nextTickAt = performance.now();
+  scheduleTransport();
+  renderTransport();
+  renderScreen();
+}
+
+function stopTransport({ persistPage = true } = {}) {
+  playing = false;
+  if (transportTimer) clearTimeout(transportTimer);
+  transportTimer = null;
+  nextTickAt = 0;
+  stopSequencerNotes();
+  playhead = -1;
+  if (persistPage) persist();
+  renderTransport();
+  renderScreen();
+  if (state.mode === 'SEQ') renderSurface();
 }
 
 function renderModes() {
@@ -163,8 +250,15 @@ function renderCcs() {
 
 function keyInfo(i) {
   switch (state.mode) {
-    case 'SEQ':
-      return { label: String(state.page * 16 + i + 1), active: visibleStep(state, i), notes: [] };
+    case 'SEQ': {
+      const absolute = state.page * 16 + i;
+      return {
+        label: String(absolute + 1),
+        active: visibleStep(state, i),
+        playhead: playing && absolute === playhead,
+        notes: [],
+      };
+    }
     case 'DRUM':
       return { label: `${DRUMS[i][0]}\n${state.drumNotes[i]}`, notes: [state.drumNotes[i]] };
     case 'SCALE': {
@@ -188,7 +282,7 @@ function renderSurface() {
   for (let i = 0; i < 16; i++) {
     const info = keyInfo(i);
     const b = document.createElement('button');
-    b.className = `key ${info.active ? 'active' : ''}`;
+    b.className = `key ${info.active ? 'active' : ''} ${info.playhead ? 'playhead' : ''}`;
     b.innerText = info.label;
     const id = `k${i}`;
     const down = (e) => {
@@ -241,12 +335,23 @@ function renderDrumEditor() {
   }
 }
 
+function renderTransport() {
+  $('play').classList.toggle('transport-on', playing);
+  tempoEl.value = String(state.tempo);
+  seqNoteEl.value = String(state.seqNotes[state.selectedTrack]);
+  $('seqNoteName').textContent = noteName(state.seqNotes[state.selectedTrack]);
+  followEl.checked = state.follow;
+  $('playPos').textContent = playhead >= 0 ? `STEP ${String(playhead + 1).padStart(2, '0')}` : 'STEP --';
+}
+
 function renderScreen() {
   const ch = state.channels[state.selectedTrack];
   $('screenMain').textContent = `TRACK ${state.selectedTrack + 1} · ${state.mode}`;
-  $('screenSub').textContent = `${ch ? `CH ${ch}` : 'MIDI OFF'} · ROOT ${ROOTS[state.root]} · ${state.scale.toUpperCase()} · PAGE ${state.page + 1}/4`;
+  $('screenSub').textContent = `${ch ? `CH ${ch}` : 'MIDI OFF'} · ${state.tempo} BPM · ROOT ${ROOTS[state.root]} · ${state.scale.toUpperCase()} · PAGE ${state.page + 1}/4`;
   const v = state.ccValues[state.selectedTrack][0];
-  $('screenValue').textContent = `CC${ccNumber(state, 0)} ${String(v).padStart(3, '0')}`;
+  $('screenValue').textContent = playing && playhead >= 0
+    ? `▶ ${String(playhead + 1).padStart(2, '0')}/64`
+    : `CC${ccNumber(state, 0)} ${String(v).padStart(3, '0')}`;
   $('pageLabel').textContent = `${state.page * 16 + 1}–${state.page * 16 + 16}`;
 }
 
@@ -255,6 +360,7 @@ function render() {
   renderTracks();
   renderCcs();
   renderDrumEditor();
+  renderTransport();
   renderSurface();
   renderScreen();
   rootEl.value = String(state.root);
@@ -287,13 +393,43 @@ function refreshOutputs() {
 
 $('connect').onclick = connectMidi;
 outputEl.onchange = () => {
+  stopTransport();
   stopAllHeld();
   output = midi && outputEl.value ? midi.outputs.get(outputEl.value) : null;
   $('midiStatus').textContent = output ? `OUT: ${output.name}` : 'MIDI ready';
 };
 
+$('play').onclick = startTransport;
+$('stop').onclick = () => stopTransport();
+
+tempoEl.onchange = () => {
+  const tempo = setTempo(state, tempoEl.value);
+  tempoEl.value = String(tempo);
+  persist();
+  if (playing) {
+    if (transportTimer) clearTimeout(transportTimer);
+    nextTickAt = performance.now() + stepDurationMs(state.tempo);
+    scheduleTransport();
+  }
+  renderScreen();
+};
+
+seqNoteEl.onchange = () => {
+  stopSequencerNotes();
+  const note = setSeqNote(state, state.selectedTrack, seqNoteEl.value);
+  seqNoteEl.value = String(note);
+  persist();
+  renderTransport();
+};
+
+followEl.onchange = () => {
+  state.follow = followEl.checked;
+  persist();
+};
+
 $('reset').onclick = () => {
   if (!window.confirm('Reset Browser Companion mappings, steps and settings?')) return;
+  stopTransport({ persistPage: false });
   stopAllHeld();
   state = createState();
   persist();
@@ -302,6 +438,7 @@ $('reset').onclick = () => {
 
 for (let ch = 0; ch <= 16; ch++) channelEl.add(new Option(ch === 0 ? 'OFF' : String(ch), String(ch)));
 channelEl.onchange = () => {
+  stopSequencerNotes();
   stopAllHeld();
   state.channels[state.selectedTrack] = Number(channelEl.value);
   persist();
@@ -317,6 +454,9 @@ $('pagePrev').onclick = () => { state.page = (state.page + 3) % 4; persist(); re
 $('pageNext').onclick = () => { state.page = (state.page + 1) % 4; persist(); render(); };
 
 window.addEventListener('blur', stopAllHeld);
-window.addEventListener('beforeunload', stopAllHeld);
+window.addEventListener('beforeunload', () => {
+  stopTransport({ persistPage: false });
+  stopAllHeld();
+});
 
 render();
