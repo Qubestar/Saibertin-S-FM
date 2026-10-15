@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-  SCENE_COUNT, SLOT_NAMES, SCENE_QUANTIZE, normalizeSlotMap, normalizeScene,
+  SCENE_COUNT, SLOT_NAMES, SCENE_QUANTIZE, normalizeSlotMap, normalizeScenePatterns, normalizeScene,
   parseSceneChain, formatSceneChain, nextSceneCursor, sceneAtCursor,
   normalizeSceneQuantize, sceneBoundarySteps, isSceneBoundary,
 } from './scene-model.js';
@@ -11,10 +11,17 @@ assert.deepEqual(SCENE_QUANTIZE, ['BAR1', 'BAR2', 'PATTERN']);
 const map = normalizeSlotMap(['B', 'C', 'Z']);
 assert.equal(map.length, 64);
 assert.deepEqual(map.slice(0, 4), ['B', 'C', 'A', 'A']);
-const scene = normalizeScene({ name: ' Drop ', slots: ['D'] }, 2);
+const patternA = { version: 1, length: 16, seqNote: 36, enabled: [0, 4, 8, 12], params: {} };
+const patterns = normalizeScenePatterns([patternA, null]);
+assert.equal(patterns.length, 64);
+assert.deepEqual(patterns[0], patternA);
+assert.equal(patterns[1], null);
+const scene = normalizeScene({ name: ' Drop ', slots: ['D'], patterns: [patternA] }, 2);
 assert.equal(scene.name, 'Drop');
 assert.equal(scene.slots[0], 'D');
 assert.equal(scene.slots[1], 'A');
+assert.deepEqual(scene.patterns[0], patternA);
+assert.equal(scene.patterns[1], null);
 assert.equal(normalizeScene(null, 0), null);
 assert.deepEqual(parseSceneChain('1, 1 > 2; 8 99'), [0, 0, 1, 7]);
 assert.equal(formatSceneChain([0, 0, 1, 7]), '1 → 1 → 2 → 8');
