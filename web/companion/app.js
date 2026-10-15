@@ -86,13 +86,14 @@ function renderCcs() {
     box.className = 'cc';
     const title = document.createElement('strong');
     title.innerHTML = `<span>K${slot + 1} · CC${cc}</span><span>${String(v).padStart(3, '0')}</span>`;
+    const valueEl = title.lastElementChild;
     const input = document.createElement('input');
     input.type = 'range'; input.min = '0'; input.max = '127'; input.value = String(v);
     input.oninput = () => {
       const value = setCc(state, slot, input.value);
       sendCc(slot, value);
+      valueEl.textContent = String(value).padStart(3, '0');
       $('screenValue').textContent = `CC${cc} ${String(value).padStart(3, '0')}`;
-      renderCcs();
     };
     box.append(title, input);
     ccsEl.append(box);
