@@ -1,5 +1,6 @@
 export const SCENE_COUNT = 8;
 export const SLOT_NAMES = ['A', 'B', 'C', 'D'];
+export const SCENE_QUANTIZE = ['BAR1', 'BAR2', 'PATTERN'];
 
 function clampInt(v, min, max, fallback = min) {
   const n = Number(v);
@@ -42,4 +43,26 @@ export function nextSceneCursor(chain, cursor = 0, direction = 1) {
 export function sceneAtCursor(chain, cursor = 0) {
   const normalized = parseSceneChain((chain || []).map((v) => Number(v) + 1));
   return normalized[clampInt(cursor, 0, normalized.length - 1, 0)];
+}
+
+export function normalizeSceneQuantize(value) {
+  return SCENE_QUANTIZE.includes(value) ? value : 'BAR1';
+}
+
+export function sceneBoundarySteps(state, quantize = 'BAR1') {
+  const q = normalizeSceneQuantize(quantize);
+  if (q === 'BAR2') return 32;
+  if (q === 'PATTERN') {
+    const lengths = Array.isArray(state?.trackLengths) ? state.trackLengths : [];
+    let longest = 1;
+    for (const value of lengths) longest = Math.max(longest, clampInt(value, 1, 64, 64));
+    return longest;
+  }
+  return 16;
+}
+
+export function isSceneBoundary(tick, state, quantize = 'BAR1') {
+  const t = Math.max(0, Math.floor(Number(tick) || 0));
+  if (t === 0) return true;
+  return t % sceneBoundarySteps(state, quantize) === 0;
 }
