@@ -1,9 +1,13 @@
-import { MODES, DEFAULT_CCS, SCALES, ROOTS, DEGREE_NAMES, DRUMS, createState, setCc, toggleStep, visibleStep, scaleNote, chordNotes, noteName } from './model.js';
+import {
+  MODES, SCALES, ROOTS, DEGREE_NAMES, DRUMS, createState, restoreState, snapshotState,
+  setCc, ccNumber, setCcNumber, setDrumNote, toggleStep, visibleStep, scaleNote, chordNotes, noteName,
+} from './model.js';
 
-const state = createState();
+const STORAGE_KEY = 'saibertin-s-fm-companion-v1';
+let state = loadState();
 let midi = null;
 let output = null;
-let held = new Map();
+const held = new Map();
 
 const $ = (id) => document.getElementById(id);
 const modesEl = $('modes');
@@ -14,9 +18,24 @@ const outputEl = $('output');
 const channelEl = $('channel');
 const rootEl = $('root');
 const scaleEl = $('scale');
+const drumEditorEl = $('drumEditor');
+const drumMapEl = $('drumMap');
 
-function midiChannel() {
-  const ch = state.channels[state.selectedTrack];
+function loadState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    return restoreState(raw?.state ?? raw);
+  } catch {
+    return createState();
+  }
+}
+
+function persist() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshotState(state))); } catch {}
+}
+
+function midiChannel(track = state.selectedTrack) {
+  const ch = state.channels[track];
   return ch >= 1 && ch <= 16 ? ch - 1 : null;
 }
 
@@ -27,32 +46,36 @@ function send(bytes) {
 function sendCc(slot, value) {
   const ch = midiChannel();
   if (ch === null) return;
-  send([0xB0 | ch, state.ccNumbers[slot], value]);
+  send([0xB0 | ch, ccNumber(state, slot), value]);
 }
 
-function noteOn(note, velocity = 100) {
-  const ch = midiChannel();
+function noteOn(note, velocity = 100, ch = midiChannel()) {
   if (ch === null) return;
   send([0x90 | ch, note & 127, velocity & 127]);
 }
 
-function noteOff(note) {
-  const ch = midiChannel();
-  if (ch === null) return;
+function noteOff(note, ch) {
+  if (ch === null || ch === undefined) return;
   send([0x80 | ch, note & 127, 0]);
 }
 
 function stopHeld(id) {
-  const notes = held.get(id);
-  if (!notes) return;
-  notes.forEach(noteOff);
+  const entry = held.get(id);
+  if (!entry) return;
+  entry.notes.forEach((note) => noteOff(note, entry.ch));
   held.delete(id);
+}
+
+function stopAllHeld() {
+  for (const id of [...held.keys()]) stopHeld(id);
 }
 
 function startHeld(id, notes) {
   stopHeld(id);
-  notes.forEach((n) => noteOn(n));
-  held.set(id, notes);
+  const ch = midiChannel();
+  if (ch === null) return;
+  notes.forEach((note) => noteOn(note, 100, ch));
+  held.set(id, { ch, notes: [...notes] });
 }
 
 function renderModes() {
@@ -61,7 +84,12 @@ function renderModes() {
     const b = document.createElement('button');
     b.className = `btn ${state.mode === mode ? 'active' : ''}`;
     b.textContent = mode;
-    b.onclick = () => { state.mode = mode; render(); };
+    b.onclick = () => {
+      stopAllHeld();
+      state.mode = mode;
+      persist();
+      render();
+    };
     modesEl.append(b);
   });
 }
@@ -72,7 +100,12 @@ function renderTracks() {
     const b = document.createElement('button');
     b.className = `btn track ${state.selectedTrack === i ? 'active' : ''}`;
     b.textContent = `T${i + 1}`;
-    b.onclick = () => { state.selectedTrack = i; render(); };
+    b.onclick = () => {
+      stopAllHeld();
+      state.selectedTrack = i;
+      persist();
+      render();
+    };
     tracksEl.append(b);
   }
   channelEl.value = String(state.channels[state.selectedTrack]);
@@ -80,30 +113,60 @@ function renderTracks() {
 
 function renderCcs() {
   ccsEl.replaceChildren();
-  state.ccNumbers.forEach((cc, slot) => {
+  for (let slot = 0; slot < 4; slot++) {
+    const cc = ccNumber(state, slot);
     const v = state.ccValues[state.selectedTrack][slot];
     const box = document.createElement('div');
     box.className = 'cc';
+
     const title = document.createElement('strong');
-    title.innerHTML = `<span>K${slot + 1} · CC${cc}</span><span>${String(v).padStart(3, '0')}</span>`;
-    const valueEl = title.lastElementChild;
+    const left = document.createElement('span');
+    left.textContent = `K${slot + 1} · CC`;
+    const mapInput = document.createElement('input');
+    mapInput.className = 'mini';
+    mapInput.type = 'number';
+    mapInput.min = '0';
+    mapInput.max = '127';
+    mapInput.value = String(cc);
+    mapInput.title = `MIDI CC number for K${slot + 1}`;
+    mapInput.onchange = () => {
+      const mapped = setCcNumber(state, slot, mapInput.value);
+      mapInput.value = String(mapped);
+      persist();
+      renderScreen();
+    };
+    const valueEl = document.createElement('span');
+    valueEl.textContent = String(v).padStart(3, '0');
+    const leftWrap = document.createElement('span');
+    leftWrap.style.display = 'flex';
+    leftWrap.style.alignItems = 'center';
+    leftWrap.style.gap = '5px';
+    leftWrap.append(left, mapInput);
+    title.append(leftWrap, valueEl);
+
     const input = document.createElement('input');
-    input.type = 'range'; input.min = '0'; input.max = '127'; input.value = String(v);
+    input.type = 'range';
+    input.min = '0';
+    input.max = '127';
+    input.value = String(v);
     input.oninput = () => {
       const value = setCc(state, slot, input.value);
       sendCc(slot, value);
       valueEl.textContent = String(value).padStart(3, '0');
-      $('screenValue').textContent = `CC${cc} ${String(value).padStart(3, '0')}`;
+      $('screenValue').textContent = `CC${ccNumber(state, slot)} ${String(value).padStart(3, '0')}`;
+      persist();
     };
     box.append(title, input);
     ccsEl.append(box);
-  });
+  }
 }
 
 function keyInfo(i) {
   switch (state.mode) {
-    case 'SEQ': return { label: String(state.page * 16 + i + 1), active: visibleStep(state, i), notes: [] };
-    case 'DRUM': return { label: `${DRUMS[i][0]}\n${DRUMS[i][1]}`, notes: [DRUMS[i][1]] };
+    case 'SEQ':
+      return { label: String(state.page * 16 + i + 1), active: visibleStep(state, i), notes: [] };
+    case 'DRUM':
+      return { label: `${DRUMS[i][0]}\n${state.drumNotes[i]}`, notes: [state.drumNotes[i]] };
     case 'SCALE': {
       const note = scaleNote(state.root, state.scale, i);
       return { label: noteName(note), notes: [note] };
@@ -133,6 +196,7 @@ function renderSurface() {
       b.classList.add('playing');
       if (state.mode === 'SEQ') {
         toggleStep(state, i);
+        persist();
         renderSurface();
       } else {
         startHeld(id, info.notes);
@@ -151,18 +215,50 @@ function renderSurface() {
   }
 }
 
+function renderDrumEditor() {
+  drumEditorEl.classList.toggle('hidden', state.mode !== 'DRUM');
+  drumMapEl.replaceChildren();
+  if (state.mode !== 'DRUM') return;
+  for (let i = 0; i < 16; i++) {
+    const item = document.createElement('label');
+    item.className = 'drum-item';
+    const name = document.createElement('span');
+    name.textContent = `${i + 1}. ${DRUMS[i][0]}`;
+    const input = document.createElement('input');
+    input.className = 'mini';
+    input.type = 'number';
+    input.min = '0';
+    input.max = '127';
+    input.value = String(state.drumNotes[i]);
+    input.onchange = () => {
+      const note = setDrumNote(state, i, input.value);
+      input.value = String(note);
+      persist();
+      renderSurface();
+    };
+    item.append(name, input);
+    drumMapEl.append(item);
+  }
+}
+
 function renderScreen() {
   const ch = state.channels[state.selectedTrack];
   $('screenMain').textContent = `TRACK ${state.selectedTrack + 1} · ${state.mode}`;
   $('screenSub').textContent = `${ch ? `CH ${ch}` : 'MIDI OFF'} · ROOT ${ROOTS[state.root]} · ${state.scale.toUpperCase()} · PAGE ${state.page + 1}/4`;
   const v = state.ccValues[state.selectedTrack][0];
-  $('screenValue').textContent = `CC${DEFAULT_CCS[0]} ${String(v).padStart(3, '0')}`;
+  $('screenValue').textContent = `CC${ccNumber(state, 0)} ${String(v).padStart(3, '0')}`;
   $('pageLabel').textContent = `${state.page * 16 + 1}–${state.page * 16 + 16}`;
 }
 
 function render() {
-  renderModes(); renderTracks(); renderCcs(); renderSurface(); renderScreen();
-  rootEl.value = String(state.root); scaleEl.value = state.scale;
+  renderModes();
+  renderTracks();
+  renderCcs();
+  renderDrumEditor();
+  renderSurface();
+  renderScreen();
+  rootEl.value = String(state.root);
+  scaleEl.value = state.scale;
 }
 
 async function connectMidi() {
@@ -190,19 +286,37 @@ function refreshOutputs() {
 }
 
 $('connect').onclick = connectMidi;
-outputEl.onchange = () => { output = midi && outputEl.value ? midi.outputs.get(outputEl.value) : null; $('midiStatus').textContent = output ? `OUT: ${output.name}` : 'MIDI ready'; };
+outputEl.onchange = () => {
+  stopAllHeld();
+  output = midi && outputEl.value ? midi.outputs.get(outputEl.value) : null;
+  $('midiStatus').textContent = output ? `OUT: ${output.name}` : 'MIDI ready';
+};
+
+$('reset').onclick = () => {
+  if (!window.confirm('Reset Browser Companion mappings, steps and settings?')) return;
+  stopAllHeld();
+  state = createState();
+  persist();
+  render();
+};
 
 for (let ch = 0; ch <= 16; ch++) channelEl.add(new Option(ch === 0 ? 'OFF' : String(ch), String(ch)));
-channelEl.onchange = () => { state.channels[state.selectedTrack] = Number(channelEl.value); renderScreen(); };
+channelEl.onchange = () => {
+  stopAllHeld();
+  state.channels[state.selectedTrack] = Number(channelEl.value);
+  persist();
+  renderScreen();
+};
 
 ROOTS.forEach((name, i) => rootEl.add(new Option(name, String(i))));
 Object.keys(SCALES).forEach((name) => scaleEl.add(new Option(name, name)));
-rootEl.onchange = () => { state.root = Number(rootEl.value); render(); };
-scaleEl.onchange = () => { state.scale = scaleEl.value; render(); };
+rootEl.onchange = () => { stopAllHeld(); state.root = Number(rootEl.value); persist(); render(); };
+scaleEl.onchange = () => { stopAllHeld(); state.scale = scaleEl.value; persist(); render(); };
 
-$('pagePrev').onclick = () => { state.page = (state.page + 3) % 4; render(); };
-$('pageNext').onclick = () => { state.page = (state.page + 1) % 4; render(); };
+$('pagePrev').onclick = () => { state.page = (state.page + 3) % 4; persist(); render(); };
+$('pageNext').onclick = () => { state.page = (state.page + 1) % 4; persist(); render(); };
 
-window.addEventListener('blur', () => { for (const id of [...held.keys()]) stopHeld(id); });
+window.addEventListener('blur', stopAllHeld);
+window.addEventListener('beforeunload', stopAllHeld);
 
 render();
