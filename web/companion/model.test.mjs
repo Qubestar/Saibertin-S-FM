@@ -107,6 +107,7 @@ assert.deepEqual(e0.ccLocks, [
 ]);
 assert.equal(sequenceEventsAtTick(s, 8, () => 0.50).some((e) => e.track === 0), false);
 
+// 64-track scheduling: a high-bank track is a normal independent MIDI track.
 setTrackLength(s, 63, 31);
 setStepEnabled(s, 63, 0, true);
 setStepParam(s, 63, 0, 'note', 48);
@@ -119,6 +120,7 @@ assert.equal(high.emitInternal, false);
 assert.equal(high.channel, 15);
 assert.equal(high.note, 48);
 
+// Polymeter remains independent between banks.
 setStepParam(s, 0, 8, 'probability', 100);
 setStepEnabled(s, 0, 0, true);
 setStepEnabled(s, 1, 1, true);
@@ -130,6 +132,7 @@ assert.equal(poly.some((e) => e.track === 1 && e.step === 1 && e.emitMidi === fa
 poly = sequenceEventsAtTick(s, 12, () => 0);
 assert.equal(poly.some((e) => e.track === 0 && e.step === 0), true);
 
+// Restore a new 64-track state.
 const restored = restoreState({
   mode: 'DRUM', selectedTrack: 50, page: 3, root: 11, scale: 'Lydian', tempo: 132, follow: false,
   channels: Array.from({ length: 64 }, (_, i) => (i % 16) + 1),
@@ -144,13 +147,14 @@ const restored = restoreState({
 assert.equal(restored.selectedTrack, 50);
 assert.equal(restored.trackLengths[50], 7);
 assert.equal(restored.trackTargets[2], 'BOTH');
-assert.equal(restored.trackTargets[50], 'MIDI');
+assert.equal(restored.trackTargets[50], 'MIDI'); // internal is only available to SLOOP parts 1-4
 assert.equal(restored.internalEngines[2], 'FM6');
 assert.equal(restored.internalSounds[2], 152);
 assert.equal(restored.page, 0);
 assert.equal(restored.stepParams[0][0].micro, 50);
 assert.equal(snapshotState(restored).version, 5);
 
+// Migration from the old 4-track Browser Companion preserves tracks 1-4 and initializes 5-64 safely.
 const migrated = restoreState({
   selectedTrack: 2,
   channels: [16, 15, 14, 13],
@@ -173,6 +177,7 @@ assert.deepEqual(migrated.ccNumbers[4], [74, 71, 73, 91]);
 assert.equal(migrated.steps[0][63], true);
 assert.equal(migrated.steps[4][0], false);
 
+// Very old flat CC mapping still migrates globally.
 const legacy = restoreState({ ccNumbers: [10, 20, 30, 40] });
 assert.deepEqual(legacy.ccNumbers[0], [10, 20, 30, 40]);
 assert.deepEqual(legacy.ccNumbers[63], [10, 20, 30, 40]);
