@@ -32,6 +32,9 @@ export function createState() {
     ccNumbers: Array.from({ length: 4 }, () => [...DEFAULT_CCS]),
     drumNotes: DRUMS.map(([, note]) => note),
     steps: Array.from({ length: 4 }, () => Array(64).fill(false)),
+    seqNotes: [60, 64, 67, 36],
+    tempo: 120,
+    follow: true,
     page: 0,
     root: 0,
     scale: 'Minor',
@@ -78,6 +81,16 @@ export function setDrumNote(state, lane, value) {
   return state.drumNotes[lane];
 }
 
+export function setSeqNote(state, track, value) {
+  state.seqNotes[track] = clampMidi(value);
+  return state.seqNotes[track];
+}
+
+export function setTempo(state, value) {
+  state.tempo = clampInt(value, 30, 300, 120);
+  return state.tempo;
+}
+
 export function toggleStep(state, visibleIndex) {
   const absolute = state.page * 16 + visibleIndex;
   state.steps[state.selectedTrack][absolute] = !state.steps[state.selectedTrack][absolute];
@@ -112,6 +125,22 @@ export function noteName(note) {
   return `${pc}${Math.floor(note / 12) - 1}`;
 }
 
+export function stepDurationMs(tempo) {
+  return 60000 / clampInt(tempo, 30, 300, 120) / 4;
+}
+
+export function sequenceEventsAtStep(state, stepIndex) {
+  const step = clampInt(stepIndex, 0, 63, 0);
+  const events = [];
+  for (let track = 0; track < 4; track++) {
+    if (!state.steps[track][step]) continue;
+    const ch = state.channels[track];
+    if (ch < 1 || ch > 16) continue;
+    events.push({ track, channel: ch - 1, note: clampMidi(state.seqNotes[track]), velocity: 100 });
+  }
+  return events;
+}
+
 export function restoreState(raw) {
   const s = createState();
   if (!raw || typeof raw !== 'object') return s;
@@ -120,6 +149,8 @@ export function restoreState(raw) {
   s.selectedTrack = clampInt(raw.selectedTrack, 0, 3, 0);
   s.page = clampInt(raw.page, 0, 3, 0);
   s.root = clampInt(raw.root, 0, 11, 0);
+  s.tempo = clampInt(raw.tempo, 30, 300, 120);
+  if (typeof raw.follow === 'boolean') s.follow = raw.follow;
   if (typeof raw.scale === 'string' && SCALES[raw.scale]) s.scale = raw.scale;
 
   if (Array.isArray(raw.channels))
@@ -140,6 +171,9 @@ export function restoreState(raw) {
 
   if (Array.isArray(raw.drumNotes))
     s.drumNotes = midiRow(raw.drumNotes, DRUMS.map(([, note]) => note), 16);
+
+  if (Array.isArray(raw.seqNotes))
+    s.seqNotes = midiRow(raw.seqNotes, s.seqNotes, 4);
 
   if (Array.isArray(raw.steps))
     s.steps = Array.from({ length: 4 }, (_, t) => boolRow(raw.steps[t], 64));
