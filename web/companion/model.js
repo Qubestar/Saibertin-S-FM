@@ -1,5 +1,6 @@
 export const MODES = ['KEYS', 'SCALE', 'CHORD', 'DRUM', 'SEQ'];
 export const DEFAULT_CCS = [74, 71, 73, 91];
+export const STORAGE_VERSION = 1;
 
 export const SCALES = {
   Major: [0, 2, 4, 5, 7, 9, 11],
@@ -28,7 +29,8 @@ export function createState() {
     selectedTrack: 0,
     channels: [1, 2, 3, 10],
     ccValues: Array.from({ length: 4 }, () => [64, 64, 64, 64]),
-    ccNumbers: [...DEFAULT_CCS],
+    ccNumbers: Array.from({ length: 4 }, () => [...DEFAULT_CCS]),
+    drumNotes: DRUMS.map(([, note]) => note),
     steps: Array.from({ length: 4 }, () => Array(64).fill(false)),
     page: 0,
     root: 0,
@@ -40,6 +42,19 @@ export function clampMidi(v) {
   return Math.max(0, Math.min(127, Math.round(Number(v) || 0)));
 }
 
+function clampInt(v, min, max, fallback = min) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : fallback;
+}
+
+function boolRow(row, length) {
+  return Array.from({ length }, (_, i) => Boolean(row?.[i]));
+}
+
+function midiRow(row, fallback, length) {
+  return Array.from({ length }, (_, i) => clampMidi(row?.[i] ?? fallback[i]));
+}
+
 export function setCc(state, slot, value) {
   state.ccValues[state.selectedTrack][slot] = clampMidi(value);
   return state.ccValues[state.selectedTrack][slot];
@@ -47,6 +62,20 @@ export function setCc(state, slot, value) {
 
 export function adjustCc(state, slot, delta) {
   return setCc(state, slot, state.ccValues[state.selectedTrack][slot] + delta);
+}
+
+export function ccNumber(state, slot) {
+  return state.ccNumbers[state.selectedTrack][slot];
+}
+
+export function setCcNumber(state, slot, value) {
+  state.ccNumbers[state.selectedTrack][slot] = clampMidi(value);
+  return state.ccNumbers[state.selectedTrack][slot];
+}
+
+export function setDrumNote(state, lane, value) {
+  state.drumNotes[lane] = clampMidi(value);
+  return state.drumNotes[lane];
 }
 
 export function toggleStep(state, visibleIndex) {
@@ -81,4 +110,43 @@ export function chordNotes(root, scaleName, degree, base = 48) {
 export function noteName(note) {
   const pc = ROOTS[((note % 12) + 12) % 12];
   return `${pc}${Math.floor(note / 12) - 1}`;
+}
+
+export function restoreState(raw) {
+  const s = createState();
+  if (!raw || typeof raw !== 'object') return s;
+
+  if (MODES.includes(raw.mode)) s.mode = raw.mode;
+  s.selectedTrack = clampInt(raw.selectedTrack, 0, 3, 0);
+  s.page = clampInt(raw.page, 0, 3, 0);
+  s.root = clampInt(raw.root, 0, 11, 0);
+  if (typeof raw.scale === 'string' && SCALES[raw.scale]) s.scale = raw.scale;
+
+  if (Array.isArray(raw.channels))
+    s.channels = Array.from({ length: 4 }, (_, i) => clampInt(raw.channels[i], 0, 16, s.channels[i]));
+
+  if (Array.isArray(raw.ccValues))
+    s.ccValues = Array.from({ length: 4 }, (_, t) => midiRow(raw.ccValues[t], s.ccValues[t], 4));
+
+  if (Array.isArray(raw.ccNumbers)) {
+    // M2 initially used one global four-CC row. Accept it as a migration input.
+    if (raw.ccNumbers.length === 4 && raw.ccNumbers.every((v) => !Array.isArray(v))) {
+      const row = midiRow(raw.ccNumbers, DEFAULT_CCS, 4);
+      s.ccNumbers = Array.from({ length: 4 }, () => [...row]);
+    } else {
+      s.ccNumbers = Array.from({ length: 4 }, (_, t) => midiRow(raw.ccNumbers[t], DEFAULT_CCS, 4));
+    }
+  }
+
+  if (Array.isArray(raw.drumNotes))
+    s.drumNotes = midiRow(raw.drumNotes, DRUMS.map(([, note]) => note), 16);
+
+  if (Array.isArray(raw.steps))
+    s.steps = Array.from({ length: 4 }, (_, t) => boolRow(raw.steps[t], 64));
+
+  return s;
+}
+
+export function snapshotState(state) {
+  return { version: STORAGE_VERSION, state: restoreState(state) };
 }
