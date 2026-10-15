@@ -1,9 +1,10 @@
 export const MODES = ['KEYS', 'SCALE', 'CHORD', 'DRUM', 'SEQ'];
 export const DEFAULT_CCS = [74, 71, 73, 91];
-export const STORAGE_VERSION = 5;
+export const STORAGE_VERSION = 6;
 export const TRACK_COUNT = 64;
 export const TRACK_BANK_SIZE = 16;
 export const TRACK_BANKS = ['A', 'B', 'C', 'D'];
+export const MIDI_PORTS = ['A', 'B', 'C', 'D'];
 export const INTERNAL_TRACK_COUNT = 4;
 export const TRACK_TARGETS = ['MIDI', 'INTERNAL', 'BOTH'];
 export const INTERNAL_ENGINES = ['ANALOG', 'DIGITAL', 'PHASE', 'LOFI', 'SAMPLE', 'VOICE', 'TRIO', 'WHEEL', 'GRAIN', 'FM6', 'PHYS', 'NOISE'];
@@ -33,6 +34,7 @@ function defaultStepParam() {
 }
 
 function defaultChannel(track) { return (track % 16) + 1; }
+function defaultMidiPort(track) { return Math.floor(track / TRACK_BANK_SIZE); }
 function defaultSeqNote(track) { return [60, 64, 67, 36][track] ?? 60; }
 function defaultEngine(track) { return ['ANALOG', 'DIGITAL', 'PHASE', 'SAMPLE'][track] ?? 'ANALOG'; }
 
@@ -41,6 +43,7 @@ export function createState() {
     mode: 'SEQ',
     selectedTrack: 0,
     channels: Array.from({ length: TRACK_COUNT }, (_, t) => defaultChannel(t)),
+    midiPorts: Array.from({ length: TRACK_COUNT }, (_, t) => defaultMidiPort(t)),
     ccValues: Array.from({ length: TRACK_COUNT }, () => [64, 64, 64, 64]),
     ccNumbers: Array.from({ length: TRACK_COUNT }, () => [...DEFAULT_CCS]),
     drumNotes: DRUMS.map(([, note]) => note),
@@ -93,6 +96,7 @@ export function trackLabel(track) {
   return `${TRACK_BANKS[trackBankIndex(t)]}${String(trackSlotIndex(t) + 1).padStart(2, '0')}`;
 }
 export function canUseInternal(track) { return trackIndex(track) < INTERNAL_TRACK_COUNT; }
+export function midiPortLabel(port) { return MIDI_PORTS[clampInt(port, 0, MIDI_PORTS.length - 1, 0)]; }
 
 export function setCc(state, slot, value) {
   state.ccValues[state.selectedTrack][slot] = clampMidi(value);
@@ -108,6 +112,11 @@ export function setDrumNote(state, lane, value) { state.drumNotes[lane] = clampM
 export function setSeqNote(state, track, value) { const t = trackIndex(track); state.seqNotes[t] = clampMidi(value); return state.seqNotes[t]; }
 export function setTempo(state, value) { state.tempo = clampInt(value, 30, 300, 120); return state.tempo; }
 
+export function setMidiPort(state, track, value) {
+  const t = trackIndex(track);
+  state.midiPorts[t] = clampInt(value, 0, MIDI_PORTS.length - 1, defaultMidiPort(t));
+  return state.midiPorts[t];
+}
 export function setTrackLength(state, track, value) {
   const t = trackIndex(track);
   state.trackLengths[t] = clampInt(value, 1, 64, 64);
@@ -221,6 +230,7 @@ export function sequenceEventsAtTick(state, tick, random = Math.random) {
       track, step, target,
       emitMidi: emitMidi && ch >= 1 && ch <= 16,
       emitInternal,
+      port: state.midiPorts[track],
       channel: ch >= 1 && ch <= 16 ? ch - 1 : null,
       engine: state.internalEngines[track],
       sound: state.internalSounds[track],
@@ -251,6 +261,8 @@ export function restoreState(raw) {
 
   if (Array.isArray(raw.channels))
     s.channels = Array.from({ length: TRACK_COUNT }, (_, t) => clampInt(raw.channels[t], 0, 16, s.channels[t]));
+  if (Array.isArray(raw.midiPorts))
+    s.midiPorts = Array.from({ length: TRACK_COUNT }, (_, t) => clampInt(raw.midiPorts[t], 0, MIDI_PORTS.length - 1, s.midiPorts[t]));
 
   if (Array.isArray(raw.ccValues))
     s.ccValues = Array.from({ length: TRACK_COUNT }, (_, t) => midiRow(raw.ccValues[t], s.ccValues[t], 4));

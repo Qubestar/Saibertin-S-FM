@@ -1,8 +1,8 @@
 import {
   MODES, SCALES, ROOTS, DEGREE_NAMES, DRUMS, TRACK_TARGETS, INTERNAL_ENGINES,
-  TRACK_COUNT, TRACK_BANK_SIZE, TRACK_BANKS,
+  TRACK_COUNT, TRACK_BANK_SIZE, TRACK_BANKS, MIDI_PORTS,
   createState, restoreState, snapshotState,
-  setCc, ccNumber, setCcNumber, setDrumNote, setSeqNote, setTempo,
+  setCc, ccNumber, setCcNumber, setDrumNote, setSeqNote, setTempo, setMidiPort,
   setTrackLength, setTrackTarget, setInternalEngine, setInternalSound, trackLocalStep, maxPageForTrack,
   trackBankIndex, trackSlotIndex, trackLabel, canUseInternal,
   toggleStep, setStepEnabled, visibleStep, stepParam, effectiveStepNote, setStepParam, setStepCcLock,
@@ -10,9 +10,11 @@ import {
 } from './model.js';
 
 const STORAGE_KEY = 'saibertin-s-fm-companion-v1';
+const OUTPUT_MAP_KEY = 'saibertin-s-fm-output-map-v1';
 let state = loadState();
 let midi = null;
-let output = null;
+let outputMap = loadOutputMap();
+const outputs = Array(MIDI_PORTS.length).fill(null);
 const held = new Map();
 
 let playing = false;
@@ -29,8 +31,8 @@ const trackBanksEl = $('trackBanks');
 const tracksEl = $('tracks');
 const ccsEl = $('ccs');
 const surfaceEl = $('surface');
-const outputEl = $('output');
 const channelEl = $('channel');
+const midiPortEl = $('midiPort');
 const rootEl = $('root');
 const scaleEl = $('scale');
 const drumEditorEl = $('drumEditor');
@@ -52,6 +54,7 @@ const trackLengthEl = $('trackLength');
 const trackTargetEl = $('trackTarget');
 const internalEngineEl = $('internalEngine');
 const internalSoundEl = $('internalSound');
+const outputSelects = MIDI_PORTS.map((port) => $(`output${port}`));
 
 function loadState() {
   try {
@@ -62,22 +65,44 @@ function loadState() {
   }
 }
 function persist() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshotState(state))); } catch {} }
+
+function loadOutputMap() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(OUTPUT_MAP_KEY) || 'null');
+    return Array.from({ length: MIDI_PORTS.length }, (_, i) => typeof raw?.[i] === 'string' ? raw[i] : '');
+  } catch {
+    return Array(MIDI_PORTS.length).fill('');
+  }
+}
+function persistOutputMap() { try { localStorage.setItem(OUTPUT_MAP_KEY, JSON.stringify(outputMap)); } catch {} }
+
 function midiChannel(track = state.selectedTrack) {
   const ch = state.channels[track];
   return ch >= 1 && ch <= 16 ? ch - 1 : null;
 }
-function send(bytes) { if (output) output.send(bytes); }
+function midiPort(track = state.selectedTrack) {
+  const port = Number(state.midiPorts[track]);
+  return Number.isInteger(port) && port >= 0 && port < MIDI_PORTS.length ? port : 0;
+}
+function send(bytes, port = midiPort()) {
+  const output = outputs[port];
+  if (output) output.send(bytes);
+}
 function sendCc(slot, value) {
   const ch = midiChannel();
   if (ch === null || state.trackTargets[state.selectedTrack] === 'INTERNAL') return;
-  send([0xB0 | ch, ccNumber(state, slot), value]);
+  send([0xB0 | ch, ccNumber(state, slot), value], midiPort());
 }
-function noteOn(note, velocity = 100, ch = midiChannel()) { if (ch !== null) send([0x90 | ch, note & 127, velocity & 127]); }
-function noteOff(note, ch) { if (ch !== null && ch !== undefined) send([0x80 | ch, note & 127, 0]); }
+function noteOn(note, velocity = 100, ch = midiChannel(), port = midiPort()) {
+  if (ch !== null) send([0x90 | ch, note & 127, velocity & 127], port);
+}
+function noteOff(note, ch, port = midiPort()) {
+  if (ch !== null && ch !== undefined) send([0x80 | ch, note & 127, 0], port);
+}
 function stopHeld(id) {
   const entry = held.get(id);
   if (!entry) return;
-  entry.notes.forEach((note) => noteOff(note, entry.ch));
+  entry.notes.forEach((note) => noteOff(note, entry.ch, entry.port));
   held.delete(id);
 }
 function stopAllHeld() { for (const id of [...held.keys()]) stopHeld(id); }
@@ -85,9 +110,10 @@ function startHeld(id, notes) {
   stopHeld(id);
   if (state.trackTargets[state.selectedTrack] === 'INTERNAL') return;
   const ch = midiChannel();
+  const port = midiPort();
   if (ch === null) return;
-  notes.forEach((note) => noteOn(note, 100, ch));
-  held.set(id, { ch, notes: [...notes] });
+  notes.forEach((note) => noteOn(note, 100, ch, port));
+  held.set(id, { ch, port, notes: [...notes] });
 }
 function trackedTimeout(fn, delay) {
   const timer = setTimeout(() => { seqTimers.delete(timer); fn(); }, Math.max(0, delay));
@@ -98,28 +124,28 @@ function stopSequencerNotes() {
   for (const timer of seqTimers) clearTimeout(timer);
   seqTimers.clear();
   plannerTimer = null;
-  for (const event of seqActive.values()) if (event.emitMidi) noteOff(event.note, event.channel);
+  for (const event of seqActive.values()) if (event.emitMidi) noteOff(event.note, event.channel, event.port);
   seqActive.clear();
 }
 function fireSequenceHit(event, hitSpan) {
   if (!event.emitMidi) return;
   const prior = seqActive.get(event.track);
-  if (prior?.emitMidi) noteOff(prior.note, prior.channel);
+  if (prior?.emitMidi) noteOff(prior.note, prior.channel, prior.port);
   const hit = { ...event };
-  noteOn(hit.note, hit.velocity, hit.channel);
+  noteOn(hit.note, hit.velocity, hit.channel, hit.port);
   seqActive.set(hit.track, hit);
   const gateMs = Math.max(4, Math.min(hitSpan * 0.9, hitSpan * (hit.gate / 100)));
   trackedTimeout(() => {
     const current = seqActive.get(hit.track);
     if (current === hit) {
-      noteOff(hit.note, hit.channel);
+      noteOff(hit.note, hit.channel, hit.port);
       seqActive.delete(hit.track);
     }
   }, gateMs);
 }
 function sendStepLocks(event) {
   if (!event.emitMidi || event.channel === null) return;
-  for (const lock of event.ccLocks || []) send([0xB0 | event.channel, lock.cc & 127, lock.value & 127]);
+  for (const lock of event.ccLocks || []) send([0xB0 | event.channel, lock.cc & 127, lock.value & 127], event.port);
 }
 function scheduleSequenceEvent(event, nominalAt, stepMs) {
   const eventAt = nominalAt + stepMs * ((event.micro || 0) / 100);
@@ -221,11 +247,12 @@ function renderTracks() {
     const b = document.createElement('button');
     b.className = `btn track ${state.selectedTrack === track ? 'active' : ''}`;
     b.textContent = trackLabel(track);
-    b.title = `Track ${track + 1}/64 · Length ${state.trackLengths[track]} · ${state.trackTargets[track]} · MIDI CH ${state.channels[track] || 'OFF'}`;
+    b.title = `Track ${track + 1}/64 · Port ${MIDI_PORTS[state.midiPorts[track]]} · CH ${state.channels[track] || 'OFF'} · Length ${state.trackLengths[track]} · ${state.trackTargets[track]}`;
     b.onclick = () => selectTrack(track);
     tracksEl.append(b);
   }
   channelEl.value = String(state.channels[state.selectedTrack]);
+  midiPortEl.value = String(state.midiPorts[state.selectedTrack]);
 }
 function renderTrackSetup() {
   const t = state.selectedTrack;
@@ -234,14 +261,16 @@ function renderTrackSetup() {
   trackTargetEl.value = state.trackTargets[t];
   internalEngineEl.value = state.internalEngines[t];
   internalSoundEl.value = String(state.internalSounds[t]);
+  midiPortEl.value = String(state.midiPorts[t]);
   for (const option of trackTargetEl.options) option.disabled = !internalCapable && option.value !== 'MIDI';
   const internal = internalCapable && state.trackTargets[t] !== 'MIDI';
   internalEngineEl.disabled = !internal;
   internalSoundEl.disabled = !internal;
   channelEl.disabled = state.trackTargets[t] === 'INTERNAL';
+  midiPortEl.disabled = state.trackTargets[t] === 'INTERNAL';
   $('internalHint').textContent = internalCapable
     ? (internal ? 'Internal part metadata is stored now; Browser audio arrives with the shared SLOOP/WASM core.' : 'This track can address MIDI or one of the four native SLOOP internal parts.')
-    : 'Command-center track: MIDI only on FM-1. T01–T04 remain the four native internal-audio parts.';
+    : 'Command-center track: MIDI only on FM-1. A01–A04 remain the four native internal-audio parts.';
 }
 function renderCcs() {
   ccsEl.replaceChildren();
@@ -377,8 +406,9 @@ function renderTransport() {
 }
 function renderScreen() {
   const t = state.selectedTrack; const ch = state.channels[t]; const target = state.trackTargets[t]; const label = trackLabel(t);
+  const port = MIDI_PORTS[state.midiPorts[t]];
   $('screenMain').textContent = `TRACK ${label} · ${state.mode}`;
-  $('screenSub').textContent = `#${t + 1}/64 · ${target} · ${ch ? `CH ${ch}` : 'MIDI OFF'} · LEN ${state.trackLengths[t]} · ${state.tempo} BPM · PAGE ${state.page + 1}/${maxPageForTrack(state, t) + 1}`;
+  $('screenSub').textContent = `#${t + 1}/64 · ${target} · PORT ${port} · ${ch ? `CH ${ch}` : 'MIDI OFF'} · LEN ${state.trackLengths[t]} · ${state.tempo} BPM · PAGE ${state.page + 1}/${maxPageForTrack(state, t) + 1}`;
   const v = state.ccValues[t][0];
   $('screenValue').textContent = playing && playhead >= 0 ? `▶ ${String(playhead + 1).padStart(2, '0')}/${state.trackLengths[t]}` : `CC${ccNumber(state, 0)} ${String(v).padStart(3, '0')}`;
   const start = state.page * 16 + 1; const end = Math.min(state.page * 16 + 16, state.trackLengths[t]);
@@ -390,22 +420,56 @@ function render() {
   rootEl.value = String(state.root); scaleEl.value = state.scale;
 }
 
+function updateMidiStatus() {
+  if (!midi) {
+    $('midiStatus').textContent = 'Offline';
+    return;
+  }
+  const mapped = outputs.filter(Boolean).length;
+  $('midiStatus').textContent = `MIDI ready · ${mapped}/${MIDI_PORTS.length} ports mapped`;
+}
 async function connectMidi() {
   if (!navigator.requestMIDIAccess) { $('midiStatus').textContent = 'Web MIDI unavailable'; return; }
   try {
-    midi = await navigator.requestMIDIAccess({ sysex: false }); refreshOutputs(); midi.onstatechange = refreshOutputs; $('midiStatus').textContent = 'MIDI ready';
-  } catch (err) { $('midiStatus').textContent = `MIDI denied${err?.message ? `: ${err.message}` : ''}`; }
+    midi = await navigator.requestMIDIAccess({ sysex: false });
+    refreshOutputs();
+    midi.onstatechange = refreshOutputs;
+    updateMidiStatus();
+  } catch (err) {
+    $('midiStatus').textContent = `MIDI denied${err?.message ? `: ${err.message}` : ''}`;
+  }
 }
 function refreshOutputs() {
-  const current = outputEl.value; outputEl.replaceChildren(new Option('No MIDI output', ''));
-  if (!midi) return;
-  for (const o of midi.outputs.values()) outputEl.add(new Option(o.name || o.id, o.id));
-  if ([...outputEl.options].some((o) => o.value === current)) outputEl.value = current;
-  output = outputEl.value ? midi.outputs.get(outputEl.value) : null;
+  const available = midi ? [...midi.outputs.values()] : [];
+  outputSelects.forEach((select, port) => {
+    const wanted = outputMap[port] || select.value;
+    select.replaceChildren(new Option('No MIDI output', ''));
+    for (const o of available) select.add(new Option(o.name || o.id, o.id));
+    if (available.some((o) => o.id === wanted)) select.value = wanted;
+    else select.value = '';
+    outputs[port] = select.value ? midi.outputs.get(select.value) : null;
+  });
+
+  if (midi && available.length === 1 && outputMap.every((id) => !id)) {
+    outputMap[0] = available[0].id;
+    outputSelects[0].value = available[0].id;
+    outputs[0] = available[0];
+    persistOutputMap();
+  }
+  updateMidiStatus();
 }
 
 $('connect').onclick = connectMidi;
-outputEl.onchange = () => { stopTransport(); stopAllHeld(); output = midi && outputEl.value ? midi.outputs.get(outputEl.value) : null; $('midiStatus').textContent = output ? `OUT: ${output.name}` : 'MIDI ready'; };
+outputSelects.forEach((select, port) => {
+  select.onchange = () => {
+    stopTransport();
+    stopAllHeld();
+    outputMap[port] = select.value;
+    outputs[port] = midi && select.value ? midi.outputs.get(select.value) : null;
+    persistOutputMap();
+    updateMidiStatus();
+  };
+});
 $('play').onclick = () => startTransport(0);
 $('stop').onclick = () => stopTransport();
 tempoEl.onchange = () => {
@@ -427,6 +491,11 @@ trackLengthEl.onchange = () => {
 trackTargetEl.onchange = () => {
   stopSequencerNotes(); stopAllHeld(); trackTargetEl.value = setTrackTarget(state, state.selectedTrack, trackTargetEl.value); persist(); render();
 };
+midiPortEl.onchange = () => {
+  stopSequencerNotes(); stopAllHeld();
+  midiPortEl.value = String(setMidiPort(state, state.selectedTrack, midiPortEl.value));
+  persist(); renderTracks(); renderTrackSetup(); renderScreen();
+};
 internalEngineEl.onchange = () => { setInternalEngine(state, state.selectedTrack, internalEngineEl.value); persist(); renderTrackSetup(); renderScreen(); };
 internalSoundEl.onchange = () => { internalSoundEl.value = String(setInternalSound(state, state.selectedTrack, internalSoundEl.value)); persist(); };
 stepEnabledEl.onchange = () => { setStepEnabled(state, state.selectedTrack, selectedStep, stepEnabledEl.checked); persist(); renderSurface(); };
@@ -446,8 +515,10 @@ $('reset').onclick = () => {
   if (!window.confirm('Reset Browser Companion mappings, steps and settings?')) return;
   stopTransport({ persistPage: false }); stopAllHeld(); state = createState(); selectedStep = 0; persist(); render();
 };
+
 for (let ch = 0; ch <= 16; ch++) channelEl.add(new Option(ch === 0 ? 'OFF' : String(ch), String(ch)));
-channelEl.onchange = () => { stopSequencerNotes(); stopAllHeld(); state.channels[state.selectedTrack] = Number(channelEl.value); persist(); renderScreen(); };
+channelEl.onchange = () => { stopSequencerNotes(); stopAllHeld(); state.channels[state.selectedTrack] = Number(channelEl.value); persist(); renderTracks(); renderScreen(); };
+MIDI_PORTS.forEach((port, i) => midiPortEl.add(new Option(`PORT ${port}`, String(i))));
 TRACK_TARGETS.forEach((target) => trackTargetEl.add(new Option(target, target)));
 INTERNAL_ENGINES.forEach((engine) => internalEngineEl.add(new Option(engine, engine)));
 ROOTS.forEach((name, i) => rootEl.add(new Option(name, String(i))));

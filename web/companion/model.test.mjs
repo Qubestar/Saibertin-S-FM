@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict';
 import {
-  TRACK_COUNT, TRACK_BANKS, INTERNAL_TRACK_COUNT,
+  TRACK_COUNT, TRACK_BANKS, MIDI_PORTS, INTERNAL_TRACK_COUNT,
   createState, setCc, adjustCc, ccNumber, setCcNumber, setDrumNote,
   toggleStep, visibleStep, scaleNote, chordNotes, restoreState, snapshotState,
   setStepEnabled, stepParam, effectiveStepNote, setStepParam, setStepCcLock,
-  sequenceEventsAtTick, stepDurationMs, setTrackLength, setTrackTarget,
+  sequenceEventsAtTick, stepDurationMs, setTrackLength, setTrackTarget, setMidiPort,
   setInternalEngine, setInternalSound, trackLocalStep, maxPageForTrack,
-  trackBankIndex, trackSlotIndex, trackLabel, canUseInternal,
+  trackBankIndex, trackSlotIndex, trackLabel, canUseInternal, midiPortLabel,
 } from './model.js';
 
 const s = createState();
 assert.equal(TRACK_COUNT, 64);
 assert.deepEqual(TRACK_BANKS, ['A', 'B', 'C', 'D']);
+assert.deepEqual(MIDI_PORTS, ['A', 'B', 'C', 'D']);
 assert.equal(INTERNAL_TRACK_COUNT, 4);
 assert.equal(s.channels.length, 64);
+assert.equal(s.midiPorts.length, 64);
 assert.equal(s.steps.length, 64);
 assert.equal(s.stepParams.length, 64);
 assert.equal(s.trackLengths.length, 64);
@@ -21,6 +23,13 @@ assert.equal(s.channels[0], 1);
 assert.equal(s.channels[15], 16);
 assert.equal(s.channels[16], 1);
 assert.equal(s.channels[63], 16);
+assert.equal(s.midiPorts[0], 0);
+assert.equal(s.midiPorts[15], 0);
+assert.equal(s.midiPorts[16], 1);
+assert.equal(s.midiPorts[32], 2);
+assert.equal(s.midiPorts[63], 3);
+assert.equal(midiPortLabel(0), 'A');
+assert.equal(midiPortLabel(3), 'D');
 assert.equal(trackBankIndex(0), 0);
 assert.equal(trackBankIndex(16), 1);
 assert.equal(trackBankIndex(63), 3);
@@ -50,6 +59,9 @@ assert.equal(setDrumNote(s, 0, 140), 127);
 assert.equal(setTrackLength(s, 0, 12), 12);
 assert.equal(setTrackLength(s, 1, 7), 7);
 assert.equal(setTrackLength(s, 63, 31), 31);
+assert.equal(setMidiPort(s, 0, 3), 3);
+assert.equal(setMidiPort(s, 63, -1), 0);
+assert.equal(setMidiPort(s, 63, 3), 3);
 assert.equal(trackLocalStep(s, 0, 12), 0);
 assert.equal(trackLocalStep(s, 1, 8), 1);
 assert.equal(trackLocalStep(s, 63, 31), 0);
@@ -96,6 +108,7 @@ assert.equal(e0.step, 8);
 assert.equal(e0.target, 'BOTH');
 assert.equal(e0.emitMidi, true);
 assert.equal(e0.emitInternal, true);
+assert.equal(e0.port, 3);
 assert.equal(e0.engine, 'GRAIN');
 assert.equal(e0.sound, 152);
 assert.equal(e0.note, 72);
@@ -107,16 +120,18 @@ assert.deepEqual(e0.ccLocks, [
 ]);
 assert.equal(sequenceEventsAtTick(s, 8, () => 0.50).some((e) => e.track === 0), false);
 
-// 64-track scheduling: a high-bank track is a normal independent MIDI track.
+// 64-track scheduling: a high-bank track is a normal independent MIDI track on its own logical port.
 setTrackLength(s, 63, 31);
 setStepEnabled(s, 63, 0, true);
 setStepParam(s, 63, 0, 'note', 48);
 s.channels[63] = 16;
+setMidiPort(s, 63, 3);
 let high = sequenceEventsAtTick(s, 31, () => 0);
 high = high.find((e) => e.track === 63);
 assert.equal(high.step, 0);
 assert.equal(high.emitMidi, true);
 assert.equal(high.emitInternal, false);
+assert.equal(high.port, 3);
 assert.equal(high.channel, 15);
 assert.equal(high.note, 48);
 
@@ -132,10 +147,11 @@ assert.equal(poly.some((e) => e.track === 1 && e.step === 1 && e.emitMidi === fa
 poly = sequenceEventsAtTick(s, 12, () => 0);
 assert.equal(poly.some((e) => e.track === 0 && e.step === 0), true);
 
-// Restore a new 64-track state.
+// Restore a new 64-track state with explicit port routing.
 const restored = restoreState({
   mode: 'DRUM', selectedTrack: 50, page: 3, root: 11, scale: 'Lydian', tempo: 132, follow: false,
   channels: Array.from({ length: 64 }, (_, i) => (i % 16) + 1),
+  midiPorts: Array.from({ length: 64 }, (_, i) => i === 50 ? 1 : Math.floor(i / 16)),
   ccNumbers: Array.from({ length: 64 }, (_, t) => [t % 128, 2, 3, 4]),
   trackLengths: Array.from({ length: 64 }, (_, t) => t === 50 ? 7 : 64),
   trackTargets: Array.from({ length: 64 }, (_, t) => t === 2 ? 'BOTH' : t === 50 ? 'INTERNAL' : 'MIDI'),
@@ -146,15 +162,16 @@ const restored = restoreState({
 });
 assert.equal(restored.selectedTrack, 50);
 assert.equal(restored.trackLengths[50], 7);
+assert.equal(restored.midiPorts[50], 1);
 assert.equal(restored.trackTargets[2], 'BOTH');
-assert.equal(restored.trackTargets[50], 'MIDI'); // internal is only available to SLOOP parts 1-4
+assert.equal(restored.trackTargets[50], 'MIDI');
 assert.equal(restored.internalEngines[2], 'FM6');
 assert.equal(restored.internalSounds[2], 152);
 assert.equal(restored.page, 0);
 assert.equal(restored.stepParams[0][0].micro, 50);
-assert.equal(snapshotState(restored).version, 5);
+assert.equal(snapshotState(restored).version, 6);
 
-// Migration from the old 4-track Browser Companion preserves tracks 1-4 and initializes 5-64 safely.
+// Migration from the old 4-track Browser Companion preserves tracks 1-4 and initializes port routing safely.
 const migrated = restoreState({
   selectedTrack: 2,
   channels: [16, 15, 14, 13],
@@ -174,6 +191,10 @@ assert.deepEqual(migrated.trackTargets.slice(0, 4), ['MIDI', 'INTERNAL', 'BOTH',
 assert.equal(migrated.trackTargets[4], 'MIDI');
 assert.deepEqual(migrated.ccNumbers[0], [1, 2, 3, 4]);
 assert.deepEqual(migrated.ccNumbers[4], [74, 71, 73, 91]);
+assert.equal(migrated.midiPorts[0], 0);
+assert.equal(migrated.midiPorts[15], 0);
+assert.equal(migrated.midiPorts[16], 1);
+assert.equal(migrated.midiPorts[63], 3);
 assert.equal(migrated.steps[0][63], true);
 assert.equal(migrated.steps[4][0], false);
 
