@@ -1,6 +1,6 @@
 export const MODES = ['KEYS', 'SCALE', 'CHORD', 'DRUM', 'SEQ'];
 export const DEFAULT_CCS = [74, 71, 73, 91];
-export const STORAGE_VERSION = 1;
+export const STORAGE_VERSION = 2;
 
 export const SCALES = {
   Major: [0, 2, 4, 5, 7, 9, 11],
@@ -23,6 +23,10 @@ export const DRUMS = [
   ['Crash', 49], ['Shaker', 70], ['User 1', 60], ['User 2', 61],
 ];
 
+function defaultStepParam() {
+  return { note: null, velocity: 100, gate: 55, probability: 100, ratchet: 1 };
+}
+
 export function createState() {
   return {
     mode: 'SEQ',
@@ -32,6 +36,7 @@ export function createState() {
     ccNumbers: Array.from({ length: 4 }, () => [...DEFAULT_CCS]),
     drumNotes: DRUMS.map(([, note]) => note),
     steps: Array.from({ length: 4 }, () => Array(64).fill(false)),
+    stepParams: Array.from({ length: 4 }, () => Array.from({ length: 64 }, defaultStepParam)),
     seqNotes: [60, 64, 67, 36],
     tempo: 120,
     follow: true,
@@ -56,6 +61,17 @@ function boolRow(row, length) {
 
 function midiRow(row, fallback, length) {
   return Array.from({ length }, (_, i) => clampMidi(row?.[i] ?? fallback[i]));
+}
+
+function restoreStepParam(raw) {
+  const p = defaultStepParam();
+  if (!raw || typeof raw !== 'object') return p;
+  p.note = raw.note === null || raw.note === undefined ? null : clampMidi(raw.note);
+  p.velocity = clampInt(raw.velocity, 1, 127, 100);
+  p.gate = clampInt(raw.gate, 5, 100, 55);
+  p.probability = clampInt(raw.probability, 0, 100, 100);
+  p.ratchet = clampInt(raw.ratchet, 1, 4, 1);
+  return p;
 }
 
 export function setCc(state, slot, value) {
@@ -97,8 +113,39 @@ export function toggleStep(state, visibleIndex) {
   return state.steps[state.selectedTrack][absolute];
 }
 
+export function setStepEnabled(state, track, step, enabled) {
+  const t = clampInt(track, 0, 3, 0);
+  const s = clampInt(step, 0, 63, 0);
+  state.steps[t][s] = Boolean(enabled);
+  return state.steps[t][s];
+}
+
 export function visibleStep(state, visibleIndex) {
   return state.steps[state.selectedTrack][state.page * 16 + visibleIndex];
+}
+
+export function stepParam(state, track, step) {
+  const t = clampInt(track, 0, 3, 0);
+  const s = clampInt(step, 0, 63, 0);
+  return state.stepParams[t][s];
+}
+
+export function effectiveStepNote(state, track, step) {
+  const p = stepParam(state, track, step);
+  return p.note === null ? clampMidi(state.seqNotes[track]) : clampMidi(p.note);
+}
+
+export function setStepParam(state, track, step, field, value) {
+  const p = stepParam(state, track, step);
+  switch (field) {
+    case 'note': p.note = value === null ? null : clampMidi(value); break;
+    case 'velocity': p.velocity = clampInt(value, 1, 127, 100); break;
+    case 'gate': p.gate = clampInt(value, 5, 100, 55); break;
+    case 'probability': p.probability = clampInt(value, 0, 100, 100); break;
+    case 'ratchet': p.ratchet = clampInt(value, 1, 4, 1); break;
+    default: break;
+  }
+  return p[field];
 }
 
 export function scaleNote(root, scaleName, index, base = 48) {
@@ -129,14 +176,24 @@ export function stepDurationMs(tempo) {
   return 60000 / clampInt(tempo, 30, 300, 120) / 4;
 }
 
-export function sequenceEventsAtStep(state, stepIndex) {
+export function sequenceEventsAtStep(state, stepIndex, random = Math.random) {
   const step = clampInt(stepIndex, 0, 63, 0);
   const events = [];
   for (let track = 0; track < 4; track++) {
     if (!state.steps[track][step]) continue;
     const ch = state.channels[track];
     if (ch < 1 || ch > 16) continue;
-    events.push({ track, channel: ch - 1, note: clampMidi(state.seqNotes[track]), velocity: 100 });
+    const p = stepParam(state, track, step);
+    if (p.probability < 100 && random() * 100 >= p.probability) continue;
+    events.push({
+      track,
+      channel: ch - 1,
+      note: effectiveStepNote(state, track, step),
+      velocity: p.velocity,
+      gate: p.gate,
+      probability: p.probability,
+      ratchet: p.ratchet,
+    });
   }
   return events;
 }
@@ -160,7 +217,6 @@ export function restoreState(raw) {
     s.ccValues = Array.from({ length: 4 }, (_, t) => midiRow(raw.ccValues[t], s.ccValues[t], 4));
 
   if (Array.isArray(raw.ccNumbers)) {
-    // M2 initially used one global four-CC row. Accept it as a migration input.
     if (raw.ccNumbers.length === 4 && raw.ccNumbers.every((v) => !Array.isArray(v))) {
       const row = midiRow(raw.ccNumbers, DEFAULT_CCS, 4);
       s.ccNumbers = Array.from({ length: 4 }, () => [...row]);
@@ -177,6 +233,10 @@ export function restoreState(raw) {
 
   if (Array.isArray(raw.steps))
     s.steps = Array.from({ length: 4 }, (_, t) => boolRow(raw.steps[t], 64));
+
+  if (Array.isArray(raw.stepParams))
+    s.stepParams = Array.from({ length: 4 }, (_, t) =>
+      Array.from({ length: 64 }, (_, i) => restoreStepParam(raw.stepParams?.[t]?.[i])));
 
   return s;
 }
