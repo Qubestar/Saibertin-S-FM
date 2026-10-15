@@ -5,26 +5,55 @@ import {
 } from './pattern-model.js';
 
 const STORAGE_KEY = 'saibertin-s-fm-companion-v1';
+const SLOT_KEY = 'saibertin-s-fm-pattern-slots-v1';
+const SCENE_KEY = 'saibertin-s-fm-scenes-v1';
 const UI_KEY = 'saibertin-s-fm-pattern-ui-v1';
+const SLOT_NAMES = ['A', 'B', 'C', 'D'];
 
 function readMusicalState() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     return restoreState(raw?.state ?? raw);
-  } catch {
-    return restoreState(null);
-  }
+  } catch { return restoreState(null); }
 }
-function writeMusicalState(state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshotState(state)));
+function writeMusicalState(state) { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshotState(state))); }
+
+function currentContext() {
+  const state = readMusicalState();
+  const track = state.selectedTrack;
+  let slot = 'A';
+  let scene = 0;
+  try {
+    const slots = JSON.parse(localStorage.getItem(SLOT_KEY) || 'null');
+    const active = slots?.tracks?.[String(track)]?.active;
+    if (SLOT_NAMES.includes(active)) slot = active;
+  } catch {}
+  try {
+    const scenes = JSON.parse(localStorage.getItem(SCENE_KEY) || 'null');
+    const active = Number(scenes?.active);
+    if (Number.isInteger(active) && active >= 0 && active < 8) scene = active;
+  } catch {}
+  return { scene, track, slot, key: `${scene}:${track}:${slot}` };
+}
+
+function readUiStore() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(UI_KEY) || 'null');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch { return {}; }
 }
 function readUi() {
   const fallback = { preset: 'kick-four-floor', rotate: 0, scope: 'PAGE', mode: 'REPLACE', euclidSteps: 16, euclidPulses: 5, euclidRotate: 0 };
-  try { return { ...fallback, ...(JSON.parse(localStorage.getItem(UI_KEY) || 'null') || {}) }; }
-  catch { return fallback; }
+  const raw = readUiStore();
+  const { key } = currentContext();
+  const legacy = raw.preset ? raw : null;
+  return { ...fallback, ...(raw.byContext?.[key] || legacy || {}) };
 }
 function writeUi() {
-  const ui = {
+  const raw = readUiStore();
+  const { key } = currentContext();
+  const byContext = raw.byContext && typeof raw.byContext === 'object' ? { ...raw.byContext } : {};
+  byContext[key] = {
     preset: presetEl.value,
     rotate: Number(rotateEl.value),
     scope: scopeEl.value,
@@ -33,7 +62,7 @@ function writeUi() {
     euclidPulses: Number(euclidPulsesEl.value),
     euclidRotate: Number(euclidRotateEl.value),
   };
-  try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch {}
+  try { localStorage.setItem(UI_KEY, JSON.stringify({ version: 2, byContext })); } catch {}
 }
 
 const style = document.createElement('style');
@@ -60,7 +89,7 @@ panel.innerHTML = `
     <label>Rotate<input id="euclidRotate" type="number" min="-63" max="63" value="0"></label>
   </div>
   <div class="pattern-actions"><button class="btn pattern-euclid" id="euclidApply">Generate + apply</button><span class="pattern-preview" id="euclidPreview"></span></div>
-  <div class="status" id="patternStatus" style="margin-top:8px">Recipes change trigger placement only; note/velocity/gate/probability/ratchet/microtiming/CC-lock data is preserved.</div>
+  <div class="status" id="patternStatus" style="margin-top:8px">Preset selection is remembered independently per Scene + Track + Pattern slot.</div>
 `;
 
 const screen = document.querySelector('.screen');
@@ -88,15 +117,6 @@ for (const preset of PATTERN_PRESETS) {
   groups.get(preset.group).append(new Option(preset.name, preset.id));
 }
 
-const saved = readUi();
-presetEl.value = getPatternPreset(saved.preset).id;
-rotateEl.value = String(saved.rotate ?? 0);
-scopeEl.value = saved.scope === 'TRACK' ? 'TRACK' : 'PAGE';
-modeEl.value = saved.mode === 'MERGE' ? 'MERGE' : 'REPLACE';
-euclidStepsEl.value = String(Math.max(1, Math.min(64, Number(saved.euclidSteps) || 16)));
-euclidPulsesEl.value = String(Math.max(0, Math.min(Number(euclidStepsEl.value), Number(saved.euclidPulses) || 5)));
-euclidRotateEl.value = String(saved.euclidRotate ?? 0);
-
 function currentPresetMask() {
   const preset = getPatternPreset(presetEl.value);
   return rotatePattern(preset.mask, Number(rotateEl.value) || 0);
@@ -108,23 +128,35 @@ function currentEuclidMask() {
   if (Number(euclidPulsesEl.value) !== pulses) euclidPulsesEl.value = String(pulses);
   return euclideanPattern(steps, pulses, Number(euclidRotateEl.value) || 0);
 }
-function renderPreviews() {
+function renderPreviews(message = '') {
   $('patternPreview').textContent = patternPreview(currentPresetMask(), 16);
   const euclid = currentEuclidMask();
   $('euclidPreview').textContent = `E(${euclid.filter(Boolean).length},${euclid.length}) · ${patternPreview(euclid, 24)}`;
+  const { scene, track, slot } = currentContext();
+  statusEl.textContent = message || `Scene ${scene + 1} · ${trackLabel(track)} · Pattern ${slot} · preset ${getPatternPreset(presetEl.value).name}`;
   writeUi();
+}
+function loadContextUi(message = '') {
+  const saved = readUi();
+  presetEl.value = getPatternPreset(saved.preset).id;
+  rotateEl.value = String(saved.rotate ?? 0);
+  scopeEl.value = saved.scope === 'TRACK' ? 'TRACK' : 'PAGE';
+  modeEl.value = saved.mode === 'MERGE' ? 'MERGE' : 'REPLACE';
+  euclidStepsEl.value = String(Math.max(1, Math.min(64, Number(saved.euclidSteps) || 16)));
+  euclidPulsesEl.value = String(Math.max(0, Math.min(Number(euclidStepsEl.value), Number(saved.euclidPulses) || 5)));
+  euclidRotateEl.value = String(saved.euclidRotate ?? 0);
+  renderPreviews(message);
 }
 
 function apply(mask, label) {
   document.getElementById('stop')?.click();
   const state = readMusicalState();
   const track = state.selectedTrack;
-  state.steps[track] = applyPatternToSteps(
-    state.steps[track], state.trackLengths[track], state.page, mask, scopeEl.value, modeEl.value,
-  );
+  const { scene, slot } = currentContext();
+  state.steps[track] = applyPatternToSteps(state.steps[track], state.trackLengths[track], state.page, mask, scopeEl.value, modeEl.value);
   writeMusicalState(state);
   writeUi();
-  statusEl.textContent = `${label} → ${trackLabel(track)} · ${scopeEl.value === 'TRACK' ? 'whole track' : `page ${state.page + 1}`} · ${modeEl.value}. Reloading view…`;
+  statusEl.textContent = `${label} → Scene ${scene + 1} · ${trackLabel(track)} · Pattern ${slot}. Reloading view…`;
   setTimeout(() => location.reload(), 90);
 }
 
@@ -133,10 +165,9 @@ $('euclidApply').onclick = () => {
   const mask = currentEuclidMask();
   apply(mask, `Euclidean E(${mask.filter(Boolean).length},${mask.length})`);
 };
-
 for (const el of [presetEl, rotateEl, scopeEl, modeEl, euclidStepsEl, euclidPulsesEl, euclidRotateEl]) {
-  el.addEventListener('change', renderPreviews);
-  el.addEventListener('input', renderPreviews);
+  el.addEventListener('change', () => renderPreviews());
+  el.addEventListener('input', () => renderPreviews());
 }
-
-renderPreviews();
+window.addEventListener('saibertin:scene-recalled', () => loadContextUi('Pattern preset context updated for recalled scene.'));
+loadContextUi();
