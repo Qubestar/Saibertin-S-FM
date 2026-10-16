@@ -307,6 +307,21 @@ window.addEventListener('saibertin:transport-stop', () => {
   renderScenes('Transport stopped. Scene recalls are immediate again.');
 });
 
+window.addEventListener('saibertin:song-apply-scene', (event) => {
+  const index = Math.max(0, Math.min(SCENE_COUNT - 1, Math.floor(Number(event.detail?.sceneIndex) || 0)));
+  if (!sceneStore.scenes[index]) {
+    renderScenes(`Song Mode points to empty Scene ${index + 1}. Capture that Scene first.`);
+    return;
+  }
+  queuedScene = null;
+  if (sceneStore.auto) {
+    sceneStore.auto = false;
+    autoEl.checked = false;
+    writeScenes();
+  }
+  applySceneLive(index, event.detail?.message || `SONG · Scene ${index + 1}`);
+});
+
 window.addEventListener('beforeunload', () => {
   try {
     if (!transportRunning && sceneStore.scenes[sceneStore.active]) snapshotCurrentScene(sceneStore.active);
