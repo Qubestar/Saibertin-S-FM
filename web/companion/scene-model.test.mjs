@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {
   SCENE_COUNT, SLOT_NAMES, SCENE_QUANTIZE, normalizeSlotMap, normalizeScenePatterns, normalizeScene,
   parseSceneChain, formatSceneChain, nextSceneCursor, sceneAtCursor,
-  normalizeSceneQuantize, sceneBoundarySteps, isSceneBoundary,
+  normalizeSceneQuantize, sceneBoundarySteps, isSceneBoundary, isSceneElapsedBoundary,
 } from './scene-model.js';
 
 assert.equal(SCENE_COUNT, 8);
@@ -16,12 +16,15 @@ const patterns = normalizeScenePatterns([patternA, null]);
 assert.equal(patterns.length, 64);
 assert.deepEqual(patterns[0], patternA);
 assert.equal(patterns[1], null);
-const scene = normalizeScene({ name: ' Drop ', slots: ['D'], patterns: [patternA] }, 2);
+const scene = normalizeScene({ name: ' Drop ', slots: ['D'], patterns: [patternA], quantize: 'BAR2' }, 2);
 assert.equal(scene.name, 'Drop');
 assert.equal(scene.slots[0], 'D');
 assert.equal(scene.slots[1], 'A');
 assert.deepEqual(scene.patterns[0], patternA);
 assert.equal(scene.patterns[1], null);
+assert.equal(scene.quantize, 'BAR2');
+const migratedScene = normalizeScene({ name: 'Legacy' }, 0, 'PATTERN');
+assert.equal(migratedScene.quantize, 'PATTERN');
 assert.equal(normalizeScene(null, 0), null);
 assert.deepEqual(parseSceneChain('1, 1 > 2; 8 99'), [0, 0, 1, 7]);
 assert.equal(formatSceneChain([0, 0, 1, 7]), '1 → 1 → 2 → 8');
@@ -43,4 +46,14 @@ assert.equal(isSceneBoundary(31, timingState, 'BAR2'), false);
 assert.equal(isSceneBoundary(32, timingState, 'BAR2'), true);
 assert.equal(isSceneBoundary(64, timingState, 'PATTERN'), true);
 assert.equal(isSceneBoundary(48, timingState, 'PATTERN'), false);
+
+// Per-scene duration is measured from when that Scene became active.
+assert.equal(isSceneElapsedBoundary(0, 0, timingState, 'BAR1'), true);
+assert.equal(isSceneElapsedBoundary(15, 0, timingState, 'BAR1'), false);
+assert.equal(isSceneElapsedBoundary(16, 0, timingState, 'BAR1'), true);
+assert.equal(isSceneElapsedBoundary(32, 16, timingState, 'BAR2'), false);
+assert.equal(isSceneElapsedBoundary(47, 16, timingState, 'BAR2'), false);
+assert.equal(isSceneElapsedBoundary(48, 16, timingState, 'BAR2'), true);
+assert.equal(isSceneElapsedBoundary(15, 16, timingState, 'BAR1'), false);
+
 console.log('Saibertin S-FM scene model: ok');

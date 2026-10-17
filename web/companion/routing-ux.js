@@ -4,6 +4,7 @@ import './patterns.js';
 import './pattern-slots.js';
 import './variations.js';
 import './scenes.js';
+import './song.js';
 
 const midiPortEl = document.getElementById('midiPort');
 const channelEl = document.getElementById('channel');

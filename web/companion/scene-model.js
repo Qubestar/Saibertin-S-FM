@@ -18,7 +18,11 @@ export function normalizeScenePatterns(raw) {
   });
 }
 
-export function normalizeScene(raw, index = 0) {
+export function normalizeSceneQuantize(value) {
+  return SCENE_QUANTIZE.includes(value) ? value : 'BAR1';
+}
+
+export function normalizeScene(raw, index = 0, fallbackQuantize = 'BAR1') {
   const fallbackName = `Scene ${clampInt(index, 0, SCENE_COUNT - 1, 0) + 1}`;
   if (!raw || typeof raw !== 'object') return null;
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 32) : fallbackName;
@@ -26,6 +30,7 @@ export function normalizeScene(raw, index = 0) {
     name,
     slots: normalizeSlotMap(raw.slots),
     patterns: normalizeScenePatterns(raw.patterns),
+    quantize: normalizeSceneQuantize(raw.quantize ?? fallbackQuantize),
   };
 }
 
@@ -56,10 +61,6 @@ export function sceneAtCursor(chain, cursor = 0) {
   return normalized[clampInt(cursor, 0, normalized.length - 1, 0)];
 }
 
-export function normalizeSceneQuantize(value) {
-  return SCENE_QUANTIZE.includes(value) ? value : 'BAR1';
-}
-
 export function sceneBoundarySteps(state, quantize = 'BAR1') {
   const q = normalizeSceneQuantize(quantize);
   if (q === 'BAR2') return 32;
@@ -76,4 +77,13 @@ export function isSceneBoundary(tick, state, quantize = 'BAR1') {
   const t = Math.max(0, Math.floor(Number(tick) || 0));
   if (t === 0) return true;
   return t % sceneBoundarySteps(state, quantize) === 0;
+}
+
+export function isSceneElapsedBoundary(tick, startedAtTick, state, quantize = 'BAR1') {
+  const t = Math.max(0, Math.floor(Number(tick) || 0));
+  const start = Math.max(0, Math.floor(Number(startedAtTick) || 0));
+  if (t < start) return false;
+  const elapsed = t - start;
+  if (elapsed === 0) return true;
+  return elapsed % sceneBoundarySteps(state, quantize) === 0;
 }
