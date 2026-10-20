@@ -26,7 +26,7 @@
       <span class="status">64 logical tracks · 4 logical MIDI ports × 16 channels</span>
     </div>
 
-    <div class="box" style="margin-top:14px">
+    <div class="box" id="midiRoutingBox" data-companion-module="midi-routing" style="margin-top:14px">
       <div class="label">MIDI output routing</div>
       <div class="port-routing">
         <label>PORT A<select id="outputA"><option value="">No MIDI output</option></select></label>
@@ -37,25 +37,25 @@
       <div class="status" style="margin-top:8px">Each logical port can be mapped to a different Web MIDI output. Multiple logical ports may also point to the same physical device.</div>
     </div>
 
-    <div class="box" style="margin-top:14px">
+    <div class="box" id="trackSetupBox" data-companion-module="track-setup" style="margin-top:14px">
       <div class="label">Track setup</div>
       <div class="track-setup">
         <label>Sequence length<input id="trackLength" type="number" min="1" max="64" value="64"></label>
         <label>Target<select id="trackTarget"></select></label>
-        <label>Internal engine<select id="internalEngine"></select></label>
-        <label>Sound slot<input id="internalSound" type="number" min="0" max="152" value="0"></label>
+        <label class="track-internal-field" data-companion-module="track-internal">Internal engine<select id="internalEngine"></select></label>
+        <label class="track-internal-field" data-companion-module="track-internal">Sound slot<input id="internalSound" type="number" min="0" max="152" value="0"></label>
       </div>
-      <div class="status" id="internalHint" style="margin-top:8px"></div>
+      <div class="status track-internal-field" id="internalHint" data-companion-module="track-internal" style="margin-top:8px"></div>
     </div>
 
-    <div class="screen">
+    <div class="screen" data-companion-module="core">
       <div><div class="big" id="screenMain">TRACK A01 · SEQ</div><div class="sub" id="screenSub">#1/64 · MIDI · PORT A · CH 1 · LEN 64</div></div>
       <div id="screenValue">CC74 064</div>
     </div>
 
-    <div class="ccs" id="ccs"></div>
+    <div class="ccs" id="ccs" data-companion-module="ccs"></div>
 
-    <div class="box transport">
+    <div class="box transport" id="transportBox" data-companion-module="transport">
       <div class="label">Transport · 1/16 sequencer</div>
       <div class="row">
         <button class="btn transport-play" id="play">▶ Play</button>
@@ -68,12 +68,12 @@
       </div>
     </div>
 
-    <div class="controls" style="margin-top:14px">
+    <div class="controls" data-companion-module="core" style="margin-top:14px">
       <div class="box"><div class="label">Harmony</div><div class="row"><label>Root <select id="root"></select></label><label>Scale <select id="scale"></select></label></div></div>
       <div class="box"><div class="label">Sequence page</div><div class="row"><button class="btn" id="pagePrev">◀</button><strong id="pageLabel">1–16 / LEN 64</strong><button class="btn" id="pageNext">▶</button></div></div>
     </div>
 
-    <div class="box" id="stepEditor" style="margin-top:14px">
+    <div class="box" id="stepEditor" data-companion-module="step-editor" style="margin-top:14px">
       <div class="label">Step editor · <strong id="stepTitle">A01 · STEP 1/64</strong></div>
       <div class="step-fields">
         <label class="inline"><input id="stepEnabled" type="checkbox"> Enabled</label>
@@ -89,12 +89,12 @@
       <div class="step-locks" id="stepCcLocks"></div>
     </div>
 
-    <div class="box hidden" id="drumEditor" style="margin-top:14px">
+    <div class="box hidden" id="drumEditor" data-companion-module="drum-map" style="margin-top:14px">
       <div class="label">Drum map · MIDI note per pad</div>
       <div class="drum-map" id="drumMap"></div>
     </div>
 
-    <div class="surface" id="surface" aria-label="16 white-key performance surface"></div>
+    <div class="surface" id="surface" data-companion-module="surface" aria-label="16 white-key performance surface"></div>
     <div class="footer">M5 adds four logical MIDI ports A–D on top of the 64-track command center. Every track chooses a port plus MIDI channel. In the Browser Companion, each logical port can be mapped to a separate Web MIDI output, giving a practical 4 × 16 routing model without pretending the FM-1 firmware already exposes four USB virtual cables. Hardware USB/DIN transport feasibility remains a later firmware stage.</div>
   </section>
 </div>
