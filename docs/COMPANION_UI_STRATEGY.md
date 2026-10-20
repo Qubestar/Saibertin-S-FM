@@ -6,53 +6,57 @@ The Browser Companion is a complete editor and feature lab. It is not a 1:1 repr
 
 A long Browser page is acceptable while features are being proven, but it is not the final interaction model.
 
-## Browser workspaces
+## Browser workspaces (implemented in M11)
 
-The Companion should move toward three workspace presets:
+The Companion provides three presentation-only workspace presets via a sticky selector:
 
 ### Simple
 
-Keep only the controls needed to make and play a pattern:
+Keeps only the controls needed to make and play a pattern:
 
 - track selection;
-- target and channel;
+- essential track setup (sequence length, target, channel, MIDI port);
 - Pattern Slots;
 - pattern library;
 - transport;
-- sequence page;
-- live pads / keys.
+- harmony & sequence page;
+- live pads / keys / performance surface.
 
 ### Performance
 
-Add live arrangement and performance controls:
+Adds live arrangement and performance controls to Simple:
 
-- Scenes;
+- Scenes / pattern chain;
 - Song Mode;
 - Note Repeat;
 - Arp;
 - fills / variations;
-- clock status.
+- MIDI clock / sync status.
 
 ### Advanced
 
-Expose the complete editor:
+Exposes the complete editor (everything in Simple and Performance plus):
 
-- MIDI output routing;
-- internal-engine metadata;
-- step editor;
+- MIDI output routing (ports A–D);
+- internal-engine metadata & sound slot;
+- CC controls and mappings;
+- Step Editor;
 - CC locks;
-- detailed mappings;
-- project / future device configuration.
+- Drum mapping editor.
 
-## Module customization
+Workspaces only affect UI visibility (`display: none !important`). Background engines, automation (such as Scene Auto Chain and Song Mode), MIDI transport, and note generation remain fully active in the background regardless of which workspace is selected.
 
-Later the Companion should allow users to:
+## Future module customization (post-M11)
 
-- hide modules they never use;
-- reorder modules;
-- save workspace layouts;
+Later milestones may allow users to:
+
+- custom hide/show individual modules;
+- drag and reorder modules;
+- save custom workspace layouts;
 - restore the default layout;
-- assign selected functions to future physical controls/pages.
+- map Browser functions to future physical controls/pages.
+
+These capabilities remain future roadmap items and are not yet implemented.
 
 This lets the product keep a broad feature set without forcing every user to see every control all the time.
 
