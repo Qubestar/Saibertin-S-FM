@@ -13,7 +13,7 @@ const s = createState();
 assert.equal(TRACK_COUNT, 64);
 assert.deepEqual(TRACK_BANKS, ['A', 'B', 'C', 'D']);
 assert.deepEqual(MIDI_PORTS, ['A', 'B', 'C', 'D']);
-assert.equal(INTERNAL_TRACK_COUNT, 4);
+assert.equal(INTERNAL_TRACK_COUNT, 8);
 assert.equal(s.channels.length, 64);
 assert.equal(s.midiPorts.length, 64);
 assert.equal(s.steps.length, 64);
@@ -37,8 +37,12 @@ assert.equal(trackSlotIndex(31), 15);
 assert.equal(trackLabel(0), 'A01');
 assert.equal(trackLabel(16), 'B01');
 assert.equal(trackLabel(63), 'D16');
+assert.equal(canUseInternal(0), true);
 assert.equal(canUseInternal(3), true);
-assert.equal(canUseInternal(4), false);
+assert.equal(canUseInternal(4), true);
+assert.equal(canUseInternal(7), true);
+assert.equal(canUseInternal(8), false);
+assert.equal(canUseInternal(63), false);
 
 assert.equal(s.selectedTrack, 0);
 assert.equal(s.ccValues[0][0], 64);
@@ -70,7 +74,9 @@ assert.equal(maxPageForTrack(s, 63), 1);
 assert.equal(setTrackTarget(s, 0, 'BOTH'), 'BOTH');
 assert.equal(setInternalEngine(s, 0, 'GRAIN'), 'GRAIN');
 assert.equal(setInternalSound(s, 0, 999), 152);
-assert.equal(setTrackTarget(s, 4, 'INTERNAL'), 'MIDI');
+assert.equal(setTrackTarget(s, 4, 'INTERNAL'), 'INTERNAL');
+assert.equal(setTrackTarget(s, 7, 'BOTH'), 'BOTH');
+assert.equal(setTrackTarget(s, 8, 'INTERNAL'), 'MIDI');
 assert.equal(setTrackTarget(s, 63, 'BOTH'), 'MIDI');
 
 s.selectedTrack = 17;
@@ -119,6 +125,28 @@ assert.deepEqual(e0.ccLocks, [
   { slot: 2, cc: 73, value: 127 },
 ]);
 assert.equal(sequenceEventsAtTick(s, 8, () => 0.50).some((e) => e.track === 0), false);
+
+// M10 event-generation regression: track A08 (index 7) with Target BOTH emits both internal and MIDI.
+setTrackLength(s, 7, 16);
+setStepEnabled(s, 7, 4, true);
+setStepParam(s, 7, 4, 'note', 64);
+s.channels[7] = 8;
+setMidiPort(s, 7, 0);
+assert.equal(setTrackTarget(s, 7, 'BOTH'), 'BOTH');
+setInternalEngine(s, 7, 'SAMPLE');
+setInternalSound(s, 7, 12);
+let ev7 = sequenceEventsAtTick(s, 4, () => 0);
+const e7 = ev7.find((e) => e.track === 7);
+assert.ok(e7);
+assert.equal(e7.step, 4);
+assert.equal(e7.target, 'BOTH');
+assert.equal(e7.emitMidi, true);
+assert.equal(e7.emitInternal, true);
+assert.equal(e7.port, 0);
+assert.equal(e7.channel, 7);
+assert.equal(e7.engine, 'SAMPLE');
+assert.equal(e7.sound, 12);
+assert.equal(e7.note, 64);
 
 // 64-track scheduling: a high-bank track is a normal independent MIDI track on its own logical port.
 setTrackLength(s, 63, 31);

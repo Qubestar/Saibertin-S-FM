@@ -278,8 +278,10 @@ function renderTrackSetup() {
   channelEl.disabled = state.trackTargets[t] === 'INTERNAL';
   midiPortEl.disabled = state.trackTargets[t] === 'INTERNAL';
   $('internalHint').textContent = internalCapable
-    ? (internal ? 'Internal part metadata is stored now; Browser audio arrives with the shared SLOOP/WASM core.' : 'This track can address MIDI or one of the four native SLOOP internal parts.')
-    : 'Command-center track: MIDI only on FM-1. A01–A04 remain the four native internal-audio parts.';
+    ? (internal
+      ? 'A01–A08: internal-capable under the FM1 Open 8-track target (MIDI / INTERNAL / BOTH). Internal part metadata is stored now; Browser internal audio arrives with shared engine integration.'
+      : 'A01–A08: internal-capable under the FM1 Open 8-track target. Target may be MIDI, INTERNAL, or BOTH (internal engine selection is metadata/model state pending shared engine integration).')
+    : 'A09–D16: MIDI-only command-center tracks for now. A01–A08 are the internal-capable tracks under the FM1 Open target.';
 }
 function renderCcs() {
   ccsEl.replaceChildren();
