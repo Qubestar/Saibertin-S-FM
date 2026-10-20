@@ -2,7 +2,7 @@ import { restoreState, snapshotState } from './model.js';
 import { captureTrackPattern, applyTrackPattern, clonePatternSnapshot, PATTERN_SLOTS } from './pattern-slots-model.js';
 import {
   SCENE_COUNT, normalizeScene, parseSceneChain, formatSceneChain,
-  nextSceneCursor, sceneAtCursor, normalizeSceneQuantize, sceneBoundarySteps, isSceneBoundary,
+  nextSceneCursor, sceneAtCursor, normalizeSceneQuantize, sceneBoundarySteps, isSceneElapsedBoundary,
 } from './scene-model.js';
 
 const MUSIC_KEY = 'saibertin-s-fm-companion-v1';
@@ -26,20 +26,20 @@ function readSlots() {
 }
 function writeSlots(slots) { localStorage.setItem(SLOT_KEY, JSON.stringify(slots)); }
 function readScenes() {
-  const fallback = { version: 3, scenes: Array(SCENE_COUNT).fill(null), active: 0, chain: [0], cursor: 0, auto: false, quantize: 'BAR1' };
+  const fallback = { version: 4, scenes: Array(SCENE_COUNT).fill(null), active: 0, chain: [0], cursor: 0, auto: false };
   try {
     const raw = JSON.parse(localStorage.getItem(SCENE_KEY) || 'null');
     if (!raw || typeof raw !== 'object') return fallback;
-    const scenes = Array.from({ length: SCENE_COUNT }, (_, i) => normalizeScene(raw.scenes?.[i], i));
+    const legacyQuantize = normalizeSceneQuantize(raw.quantize);
+    const scenes = Array.from({ length: SCENE_COUNT }, (_, i) => normalizeScene(raw.scenes?.[i], i, legacyQuantize));
     const chain = parseSceneChain((raw.chain || [0]).map((v) => Number(v) + 1));
     return {
-      version: 3,
+      version: 4,
       scenes,
       active: Math.max(0, Math.min(SCENE_COUNT - 1, Number(raw.active) || 0)),
       chain,
       cursor: Math.max(0, Math.min(chain.length - 1, Number(raw.cursor) || 0)),
       auto: raw.auto === true,
-      quantize: normalizeSceneQuantize(raw.quantize),
     };
   } catch { return fallback; }
 }
@@ -68,6 +68,7 @@ function snapshotCurrentScene(index, state = readState(), slots = readSlots()) {
   syncAllActivePatterns(state, slots);
   scene.slots = Array.from({ length: 64 }, (_, track) => ensureSlotEntry(slots, track).active);
   scene.patterns = Array.from({ length: 64 }, (_, track) => clonePatternSnapshot(captureTrackPattern(state, track)));
+  scene.quantize = normalizeSceneQuantize(scene.quantize);
   writeSlots(slots);
   writeScenes();
   return true;
@@ -76,10 +77,12 @@ function snapshotCurrentScene(index, state = readState(), slots = readSlots()) {
 let transportRunning = false;
 let queuedScene = null;
 let lastPlannedTick = null;
+let currentTransportTick = 0;
+let sceneStartedTick = 0;
 
 const style = document.createElement('style');
 style.textContent = `
-.scene-panel{margin-top:14px}.scene-buttons{display:grid;grid-template-columns:repeat(8,minmax(58px,1fr));gap:7px;margin-top:10px}.scene-btn{font-weight:800;min-height:42px}.scene-btn.active{background:#184f4b!important;border-color:#3bb8aa!important;color:#c8fff8!important}.scene-btn.queued{box-shadow:0 0 0 2px #67a9ff inset}.scene-btn.empty{opacity:.6}.scene-grid{display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-top:10px}.scene-grid label,.scene-auto label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}.scene-grid input,.scene-auto select{background:#111319;color:var(--text);border:1px solid var(--line);padding:7px;border-radius:6px}.scene-actions,.scene-auto{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}.scene-auto label.inline{flex-direction:row;align-items:center}.scene-capture{background:#24422f!important;border-color:#4f9b65!important}.scene-chain{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--active)}@media(max-width:760px){.scene-buttons{grid-template-columns:repeat(4,1fr)}.scene-grid{grid-template-columns:1fr}}
+.scene-panel{margin-top:14px}.scene-buttons{display:grid;grid-template-columns:repeat(8,minmax(58px,1fr));gap:7px;margin-top:10px}.scene-btn{font-weight:800;min-height:42px}.scene-btn.active{background:#184f4b!important;border-color:#3bb8aa!important;color:#c8fff8!important}.scene-btn.queued{box-shadow:0 0 0 2px #67a9ff inset}.scene-btn.empty{opacity:.6}.scene-grid{display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-top:10px}.scene-grid label,.scene-auto label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}.scene-grid input,.scene-auto select{background:#111319;color:var(--text);border:1px solid var(--line);padding:7px;border-radius:6px}.scene-actions,.scene-auto{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}.scene-auto label.inline{flex-direction:row;align-items:center}.scene-capture{background:#24422f!important;border-color:#4f9b65!important}.scene-chain{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--active)}.scene-progress{font-weight:800;color:var(--active);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}@media(max-width:760px){.scene-buttons{grid-template-columns:repeat(4,1fr)}.scene-grid{grid-template-columns:1fr}}
 `;
 document.head.append(style);
 
@@ -94,8 +97,8 @@ panel.innerHTML = `
   </div>
   <div class="scene-auto">
     <label class="inline"><input id="sceneAuto" type="checkbox"> Auto chain</label>
-    <label>Quantize<select id="sceneQuantize"><option value="BAR1">1 BAR</option><option value="BAR2">2 BARS</option><option value="PATTERN">PATTERN END</option></select></label>
-    <span class="status" id="sceneQuantizeStatus">Changes are queued to a musical boundary.</span>
+    <label>Quantize for active scene<select id="sceneQuantize"><option value="BAR1">1 BAR</option><option value="BAR2">2 BARS</option><option value="PATTERN">PATTERN END</option></select></label>
+    <span class="status scene-progress" id="sceneQuantizeStatus">Each Scene remembers its own duration boundary.</span>
   </div>
   <div class="scene-actions">
     <button class="btn scene-capture" id="sceneCapture">Capture / update scene</button>
@@ -103,7 +106,7 @@ panel.innerHTML = `
     <button class="btn" id="sceneNext">Chain next ▶</button>
     <span class="scene-chain" id="sceneChainStatus">1</span>
   </div>
-  <div class="status" id="sceneStatus" style="margin-top:8px">Each scene owns its own sparse pattern data. Editing one scene no longer changes another scene that uses the same A/B/C/D slot.</div>
+  <div class="status" id="sceneStatus" style="margin-top:8px">Each scene owns its own pattern snapshot and Quantize setting.</div>
 `;
 
 const variation = document.querySelector('.variation-panel');
@@ -119,10 +122,35 @@ const autoEl = document.getElementById('sceneAuto');
 const quantizeEl = document.getElementById('sceneQuantize');
 const quantizeStatusEl = document.getElementById('sceneQuantizeStatus');
 
-function quantizeLabel(state = readState()) {
-  const steps = sceneBoundarySteps(state, sceneStore.quantize);
-  if (sceneStore.quantize === 'PATTERN') return `PATTERN END · ${steps} steps (longest track)`;
-  return `${sceneStore.quantize === 'BAR2' ? '2 BARS' : '1 BAR'} · ${steps} steps`;
+function activeSceneQuantize(index = sceneStore.active) {
+  return normalizeSceneQuantize(sceneStore.scenes[index]?.quantize);
+}
+
+function quantizeLabel(index = sceneStore.active, state = readState()) {
+  const quantize = activeSceneQuantize(index);
+  const steps = sceneBoundarySteps(state, quantize);
+  if (quantize === 'PATTERN') return `PATTERN END · ${steps} steps (longest track)`;
+  return `${quantize === 'BAR2' ? '2 BARS' : '1 BAR'} · ${steps} steps`;
+}
+
+function sceneProgressLabel(tick = currentTransportTick, state = readState()) {
+  const scene = sceneStore.scenes[sceneStore.active];
+  if (!scene) return 'No active Scene';
+  const quantize = activeSceneQuantize();
+  const elapsed = Math.max(0, Math.floor(Number(tick) || 0) - sceneStartedTick);
+  if (quantize === 'PATTERN') {
+    const totalSteps = sceneBoundarySteps(state, quantize);
+    const step = Math.min(totalSteps, elapsed + 1);
+    return `▶ Scene ${sceneStore.active + 1} · step ${step}/${totalSteps}`;
+  }
+  const totalBars = quantize === 'BAR2' ? 2 : 1;
+  const bar = Math.min(totalBars, Math.floor(elapsed / 16) + 1);
+  return `▶ Scene ${sceneStore.active + 1} · bar ${bar}/${totalBars}`;
+}
+
+function updateSceneProgress(tick = currentTransportTick, state = readState()) {
+  if (!transportRunning || !sceneStore.scenes[sceneStore.active]) return;
+  quantizeStatusEl.textContent = `${sceneProgressLabel(tick, state)} · ${quantizeLabel(sceneStore.active, state)}`;
 }
 
 function renderScenes(message = '') {
@@ -132,7 +160,9 @@ function renderScenes(message = '') {
     const b = document.createElement('button');
     b.className = `btn scene-btn ${sceneStore.active === i ? 'active' : ''} ${queuedScene === i ? 'queued' : ''} ${scene ? '' : 'empty'}`;
     b.textContent = scene ? `${i + 1} · ${scene.name}` : `${i + 1} · EMPTY`;
-    b.title = scene ? (transportRunning ? `Queue ${scene.name} for the next ${quantizeLabel()}` : `Recall ${scene.name}`) : 'Capture current independent pattern snapshot into this scene';
+    b.title = scene
+      ? (transportRunning ? `Queue ${scene.name}; current Scene changes after ${quantizeLabel()}` : `Recall ${scene.name} · ${quantizeLabel(i)}`)
+      : 'Capture current independent pattern snapshot into this scene';
     b.onclick = () => scene ? requestScene(i) : captureScene(i);
     buttonsEl.append(b);
   }
@@ -141,8 +171,11 @@ function renderScenes(message = '') {
   chainInputEl.value = sceneStore.chain.map((v) => v + 1).join(' ');
   chainStatusEl.textContent = `${formatSceneChain(sceneStore.chain)} · cursor ${sceneStore.cursor + 1}/${sceneStore.chain.length}`;
   autoEl.checked = sceneStore.auto;
-  quantizeEl.value = sceneStore.quantize;
-  quantizeStatusEl.textContent = `${quantizeLabel()}${transportRunning ? ' · transport running' : ''}`;
+  quantizeEl.disabled = !activeScene;
+  quantizeEl.value = activeSceneQuantize();
+  quantizeStatusEl.textContent = activeScene
+    ? (transportRunning ? `${sceneProgressLabel()} · ${quantizeLabel()}` : `Scene ${sceneStore.active + 1} · ${quantizeLabel()}`)
+    : 'Capture this Scene before setting its Quantize.';
   const queued = queuedScene !== null ? ` · queued Scene ${queuedScene + 1}` : '';
   statusEl.textContent = message || (activeScene ? `Active: ${sceneStore.active + 1} · ${activeScene.name}${queued}` : `Scene ${sceneStore.active + 1} is empty.${queued}`);
 }
@@ -163,15 +196,16 @@ function captureScene(index) {
     name: old?.name || `Scene ${index + 1}`,
     slots: Array.from({ length: 64 }, (_, track) => ensureSlotEntry(slots, track).active),
     patterns: Array.from({ length: 64 }, (_, track) => clonePatternSnapshot(captureTrackPattern(state, track))),
+    quantize: normalizeSceneQuantize(old?.quantize),
   };
   sceneStore.active = index;
   writeSlots(slots); writeScenes();
   window.dispatchEvent(new CustomEvent('saibertin:scene-recalled', { detail: { sceneIndex: index, captured: true } }));
-  renderScenes(`Captured Scene ${index + 1}: independent pattern data saved for all 64 tracks.`);
+  renderScenes(`Captured Scene ${index + 1}: independent pattern data and Quantize saved.`);
   return true;
 }
 
-function applySceneLive(index, message = '') {
+function applySceneLive(index, message = '', activationTick = null) {
   const scene = sceneStore.scenes[index];
   if (!scene) {
     renderScenes(`Scene ${index + 1} is empty. Capture it before using it in a chain.`);
@@ -202,11 +236,13 @@ function applySceneLive(index, message = '') {
     entry.active = targetSlot;
   }
 
+  scene.quantize = normalizeSceneQuantize(scene.quantize);
   sceneStore.active = index;
+  if (Number.isFinite(Number(activationTick))) sceneStartedTick = Math.max(0, Math.floor(Number(activationTick)));
   writeSlots(slots); writeState(state); writeScenes();
   window.dispatchEvent(new CustomEvent('saibertin:replace-state', { detail: { state, reason: 'scene', sceneIndex: index } }));
   window.dispatchEvent(new CustomEvent('saibertin:scene-recalled', { detail: { sceneIndex: index } }));
-  renderScenes(message || `Recalled Scene ${index + 1} · ${scene.name}${transportRunning ? ' on quantized boundary' : ''}.`);
+  renderScenes(message || `Recalled Scene ${index + 1} · ${scene.name}${transportRunning ? ' on its quantized boundary' : ''}.`);
   return true;
 }
 
@@ -214,7 +250,7 @@ function requestScene(index) {
   if (!sceneStore.scenes[index]) return captureScene(index);
   if (transportRunning) {
     queuedScene = index;
-    renderScenes(`Queued Scene ${index + 1} · ${sceneStore.scenes[index].name} for the next ${quantizeLabel()}.`);
+    renderScenes(`Queued Scene ${index + 1} · ${sceneStore.scenes[index].name}. Current Scene ${sceneStore.active + 1} will finish after ${quantizeLabel()}.`);
     return;
   }
   queuedScene = null;
@@ -247,8 +283,10 @@ autoEl.onchange = () => {
   writeScenes(); renderScenes(sceneStore.auto ? 'Auto chain armed.' : 'Auto chain disabled.');
 };
 quantizeEl.onchange = () => {
-  sceneStore.quantize = normalizeSceneQuantize(quantizeEl.value);
-  writeScenes(); renderScenes(`Scene quantization: ${quantizeLabel()}.`);
+  const scene = sceneStore.scenes[sceneStore.active];
+  if (!scene) return renderScenes('Capture this Scene before setting its Quantize.');
+  scene.quantize = normalizeSceneQuantize(quantizeEl.value);
+  writeScenes(); renderScenes(`Scene ${sceneStore.active + 1} Quantize saved: ${quantizeLabel()}.`);
 };
 
 function moveChain(direction) {
@@ -269,23 +307,29 @@ window.addEventListener('saibertin:transport-start', () => {
   transportRunning = true;
   queuedScene = null;
   lastPlannedTick = null;
+  currentTransportTick = 0;
+  sceneStartedTick = 0;
   if (sceneStore.auto) sceneStore.cursor = 0;
   writeScenes();
-  renderScenes(sceneStore.auto ? 'Auto chain started. First chain scene will be loaded for tick 1.' : 'Transport running. Scene clicks are now quantized.');
+  renderScenes(sceneStore.auto ? 'Auto chain started. First chain Scene will be loaded for tick 1.' : 'Transport running. Scene clicks are quantized by the active Scene setting.');
+  updateSceneProgress(0);
 });
 
 window.addEventListener('saibertin:transport-plan', (event) => {
   if (!transportRunning) return;
   const tick = Math.max(0, Math.floor(Number(event.detail?.tick) || 0));
-  if (tick === lastPlannedTick) return;
+  currentTransportTick = tick;
   const state = readState();
-  if (!isSceneBoundary(tick, state, sceneStore.quantize)) return;
+  updateSceneProgress(tick, state);
+  if (tick === lastPlannedTick) return;
+  const quantize = activeSceneQuantize();
+  if (!isSceneElapsedBoundary(tick, sceneStartedTick, state, quantize)) return;
   lastPlannedTick = tick;
 
   if (queuedScene !== null) {
     const target = queuedScene;
     queuedScene = null;
-    applySceneLive(target, `Queued Scene ${target + 1} recalled at tick ${tick + 1}.`);
+    applySceneLive(target, `Queued Scene ${target + 1} recalled at tick ${tick + 1}.`, tick);
     return;
   }
 
@@ -294,17 +338,35 @@ window.addEventListener('saibertin:transport-plan', (event) => {
   const target = sceneAtCursor(sceneStore.chain, sceneStore.cursor);
   writeScenes();
   if (!sceneStore.scenes[target]) {
-    renderScenes(`Auto chain skipped empty Scene ${target + 1}. Capture all scenes referenced by the chain.`);
+    renderScenes(`Auto chain skipped empty Scene ${target + 1}. Capture all Scenes referenced by the chain.`);
     return;
   }
-  applySceneLive(target, `AUTO · Scene ${target + 1} · chain ${sceneStore.cursor + 1}/${sceneStore.chain.length} · tick ${tick + 1}.`);
+  applySceneLive(target, `AUTO · Scene ${target + 1} · chain ${sceneStore.cursor + 1}/${sceneStore.chain.length} · tick ${tick + 1}.`, tick);
 });
 
 window.addEventListener('saibertin:transport-stop', () => {
   transportRunning = false;
   queuedScene = null;
   lastPlannedTick = null;
+  currentTransportTick = 0;
+  sceneStartedTick = 0;
   renderScenes('Transport stopped. Scene recalls are immediate again.');
+});
+
+window.addEventListener('saibertin:song-apply-scene', (event) => {
+  const index = Math.max(0, Math.min(SCENE_COUNT - 1, Math.floor(Number(event.detail?.sceneIndex) || 0)));
+  if (!sceneStore.scenes[index]) {
+    renderScenes(`Song Mode points to empty Scene ${index + 1}. Capture that Scene first.`);
+    return;
+  }
+  queuedScene = null;
+  if (sceneStore.auto) {
+    sceneStore.auto = false;
+    autoEl.checked = false;
+    writeScenes();
+  }
+  const activationTick = Number.isFinite(Number(event.detail?.tick)) ? Number(event.detail.tick) : null;
+  applySceneLive(index, event.detail?.message || `SONG · Scene ${index + 1}`, activationTick);
 });
 
 window.addEventListener('beforeunload', () => {
