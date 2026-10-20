@@ -77,11 +77,12 @@ function snapshotCurrentScene(index, state = readState(), slots = readSlots()) {
 let transportRunning = false;
 let queuedScene = null;
 let lastPlannedTick = null;
+let currentTransportTick = 0;
 let sceneStartedTick = 0;
 
 const style = document.createElement('style');
 style.textContent = `
-.scene-panel{margin-top:14px}.scene-buttons{display:grid;grid-template-columns:repeat(8,minmax(58px,1fr));gap:7px;margin-top:10px}.scene-btn{font-weight:800;min-height:42px}.scene-btn.active{background:#184f4b!important;border-color:#3bb8aa!important;color:#c8fff8!important}.scene-btn.queued{box-shadow:0 0 0 2px #67a9ff inset}.scene-btn.empty{opacity:.6}.scene-grid{display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-top:10px}.scene-grid label,.scene-auto label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}.scene-grid input,.scene-auto select{background:#111319;color:var(--text);border:1px solid var(--line);padding:7px;border-radius:6px}.scene-actions,.scene-auto{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}.scene-auto label.inline{flex-direction:row;align-items:center}.scene-capture{background:#24422f!important;border-color:#4f9b65!important}.scene-chain{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--active)}@media(max-width:760px){.scene-buttons{grid-template-columns:repeat(4,1fr)}.scene-grid{grid-template-columns:1fr}}
+.scene-panel{margin-top:14px}.scene-buttons{display:grid;grid-template-columns:repeat(8,minmax(58px,1fr));gap:7px;margin-top:10px}.scene-btn{font-weight:800;min-height:42px}.scene-btn.active{background:#184f4b!important;border-color:#3bb8aa!important;color:#c8fff8!important}.scene-btn.queued{box-shadow:0 0 0 2px #67a9ff inset}.scene-btn.empty{opacity:.6}.scene-grid{display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-top:10px}.scene-grid label,.scene-auto label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}.scene-grid input,.scene-auto select{background:#111319;color:var(--text);border:1px solid var(--line);padding:7px;border-radius:6px}.scene-actions,.scene-auto{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}.scene-auto label.inline{flex-direction:row;align-items:center}.scene-capture{background:#24422f!important;border-color:#4f9b65!important}.scene-chain{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--active)}.scene-progress{font-weight:800;color:var(--active);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}@media(max-width:760px){.scene-buttons{grid-template-columns:repeat(4,1fr)}.scene-grid{grid-template-columns:1fr}}
 `;
 document.head.append(style);
 
@@ -97,7 +98,7 @@ panel.innerHTML = `
   <div class="scene-auto">
     <label class="inline"><input id="sceneAuto" type="checkbox"> Auto chain</label>
     <label>Quantize for active scene<select id="sceneQuantize"><option value="BAR1">1 BAR</option><option value="BAR2">2 BARS</option><option value="PATTERN">PATTERN END</option></select></label>
-    <span class="status" id="sceneQuantizeStatus">Each Scene remembers its own duration boundary.</span>
+    <span class="status scene-progress" id="sceneQuantizeStatus">Each Scene remembers its own duration boundary.</span>
   </div>
   <div class="scene-actions">
     <button class="btn scene-capture" id="sceneCapture">Capture / update scene</button>
@@ -132,6 +133,26 @@ function quantizeLabel(index = sceneStore.active, state = readState()) {
   return `${quantize === 'BAR2' ? '2 BARS' : '1 BAR'} · ${steps} steps`;
 }
 
+function sceneProgressLabel(tick = currentTransportTick, state = readState()) {
+  const scene = sceneStore.scenes[sceneStore.active];
+  if (!scene) return 'No active Scene';
+  const quantize = activeSceneQuantize();
+  const elapsed = Math.max(0, Math.floor(Number(tick) || 0) - sceneStartedTick);
+  if (quantize === 'PATTERN') {
+    const totalSteps = sceneBoundarySteps(state, quantize);
+    const step = Math.min(totalSteps, elapsed + 1);
+    return `▶ Scene ${sceneStore.active + 1} · step ${step}/${totalSteps}`;
+  }
+  const totalBars = quantize === 'BAR2' ? 2 : 1;
+  const bar = Math.min(totalBars, Math.floor(elapsed / 16) + 1);
+  return `▶ Scene ${sceneStore.active + 1} · bar ${bar}/${totalBars}`;
+}
+
+function updateSceneProgress(tick = currentTransportTick, state = readState()) {
+  if (!transportRunning || !sceneStore.scenes[sceneStore.active]) return;
+  quantizeStatusEl.textContent = `${sceneProgressLabel(tick, state)} · ${quantizeLabel(sceneStore.active, state)}`;
+}
+
 function renderScenes(message = '') {
   buttonsEl.replaceChildren();
   for (let i = 0; i < SCENE_COUNT; i++) {
@@ -153,7 +174,7 @@ function renderScenes(message = '') {
   quantizeEl.disabled = !activeScene;
   quantizeEl.value = activeSceneQuantize();
   quantizeStatusEl.textContent = activeScene
-    ? `Scene ${sceneStore.active + 1} · ${quantizeLabel()}${transportRunning ? ' · transport running' : ''}`
+    ? (transportRunning ? `${sceneProgressLabel()} · ${quantizeLabel()}` : `Scene ${sceneStore.active + 1} · ${quantizeLabel()}`)
     : 'Capture this Scene before setting its Quantize.';
   const queued = queuedScene !== null ? ` · queued Scene ${queuedScene + 1}` : '';
   statusEl.textContent = message || (activeScene ? `Active: ${sceneStore.active + 1} · ${activeScene.name}${queued}` : `Scene ${sceneStore.active + 1} is empty.${queued}`);
@@ -286,17 +307,21 @@ window.addEventListener('saibertin:transport-start', () => {
   transportRunning = true;
   queuedScene = null;
   lastPlannedTick = null;
+  currentTransportTick = 0;
   sceneStartedTick = 0;
   if (sceneStore.auto) sceneStore.cursor = 0;
   writeScenes();
   renderScenes(sceneStore.auto ? 'Auto chain started. First chain Scene will be loaded for tick 1.' : 'Transport running. Scene clicks are quantized by the active Scene setting.');
+  updateSceneProgress(0);
 });
 
 window.addEventListener('saibertin:transport-plan', (event) => {
   if (!transportRunning) return;
   const tick = Math.max(0, Math.floor(Number(event.detail?.tick) || 0));
-  if (tick === lastPlannedTick) return;
+  currentTransportTick = tick;
   const state = readState();
+  updateSceneProgress(tick, state);
+  if (tick === lastPlannedTick) return;
   const quantize = activeSceneQuantize();
   if (!isSceneElapsedBoundary(tick, sceneStartedTick, state, quantize)) return;
   lastPlannedTick = tick;
@@ -323,6 +348,7 @@ window.addEventListener('saibertin:transport-stop', () => {
   transportRunning = false;
   queuedScene = null;
   lastPlannedTick = null;
+  currentTransportTick = 0;
   sceneStartedTick = 0;
   renderScenes('Transport stopped. Scene recalls are immediate again.');
 });
