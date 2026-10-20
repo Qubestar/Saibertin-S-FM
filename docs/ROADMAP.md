@@ -25,7 +25,7 @@ Exit criteria: control an Ableton/Logic instrument reliably from S1-FM.
 
 ## M2 — Step Sequencer
 
-- 4 MIDI tracks initially;
+- start from the existing logical 64-track Browser Companion model;
 - 16 visible steps;
 - multi-page patterns, target 64 steps for first FM-1 implementation;
 - note, velocity, gate/length;
@@ -64,7 +64,9 @@ Exit criteria: external synth/plugin sequencing feels expressive rather than mer
 - FM-1 Remote mode over USB MIDI;
 - large-screen visualization without requiring touch;
 - inspect/edit mappings, track channels, scales, chord settings and patterns;
-- keep physical FM-1 usable without the browser.
+- keep physical FM-1 usable without the browser;
+- treat the Browser Companion as a full feature lab/editor, not a 1:1 copy of the physical panel;
+- support progressive disclosure so advanced sections do not overwhelm the normal performance workflow.
 
 Exit criteria: hardware and browser can operate as one coherent system, while each remains independently usable.
 
@@ -81,10 +83,48 @@ Exit criteria: hardware and browser can operate as one coherent system, while ea
 
 Exit criteria: S1-FM works as a live-performance MIDI instrument.
 
+## M7–M9 — Routing, Scenes and Song Mode
+
+- 64 logical tracks in four 16-track banks;
+- four logical Browser MIDI ports A-D;
+- Pattern Slots A/B/C/D;
+- pattern library, fills and variations;
+- independent Scene snapshots;
+- per-Scene Quantize and Auto Chain;
+- Song Mode with named sections and bar counts.
+
+Exit criteria: a complete arrangement can be built and performed in the Browser Companion without losing the fast pattern workflow.
+
+## M10 — Eight Internal-Capable Tracks
+
+Official M-VAVE FM1 Open (October 2026) establishes an eight-track groovebox architecture on FM-1 hardware. Update the S-FM target accordingly:
+
+- A01-A08 become internal-capable tracks;
+- each of A01-A08 can target MIDI, INTERNAL or BOTH;
+- the remaining logical command-center tracks remain MIDI-first;
+- preserve all existing 64-track Browser projects during migration;
+- do not remove the existing SLOOP-oriented engine abstraction yet;
+- add an adapter layer later for the official FM1 Open sources: DX7 FM, Bass 303, Drum 808, PSG, Pluck and Sampler;
+- Browser internal-audio metadata is not proof of real hardware audio until the shared engine/firmware path is integrated and tested on the FM-1.
+
+Exit criteria: the model, UI and tests consistently expose eight internal-capable parts while preserving MIDI/BOTH routing and existing saved projects.
+
+## M11 — Companion Workspace / Hardware UI Strategy
+
+- organize the Browser Companion into collapsible work areas rather than one long scroll;
+- provide Simple / Performance / Advanced workspace presets;
+- allow modules to be hidden and reordered in the editor;
+- keep core live controls immediately accessible: tracks, transport, patterns/scenes and performance;
+- move setup-heavy functions such as routing, detailed locks, mappings and project administration behind secondary panels;
+- define physical-device pages/layers independently from the Browser Companion layout;
+- later allow user-configurable assignments so unused functions do not consume scarce hardware controls.
+
+Exit criteria: a new user can perform basic sequencing without scrolling through every advanced function, while power users retain the complete feature set.
+
 ## Later experiments
 
-- 8 MIDI tracks without forcing the upstream 4-part audio engine to become 8-part;
 - 128-step compatibility with Saibertin S1's data model;
 - community custom-mode API/SDK;
 - mode manifests and discoverable community builds;
-- optional mappings/templates for common DAWs, drum racks and hardware synths.
+- optional mappings/templates for common DAWs, drum racks and hardware synths;
+- customizable physical-control profiles managed from the Companion editor.
