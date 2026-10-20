@@ -5,7 +5,7 @@ export const TRACK_COUNT = 64;
 export const TRACK_BANK_SIZE = 16;
 export const TRACK_BANKS = ['A', 'B', 'C', 'D'];
 export const MIDI_PORTS = ['A', 'B', 'C', 'D'];
-export const INTERNAL_TRACK_COUNT = 4;
+export const INTERNAL_TRACK_COUNT = 8;
 export const TRACK_TARGETS = ['MIDI', 'INTERNAL', 'BOTH'];
 export const INTERNAL_ENGINES = ['ANALOG', 'DIGITAL', 'PHASE', 'LOFI', 'SAMPLE', 'VOICE', 'TRIO', 'WHEEL', 'GRAIN', 'FM6', 'PHYS', 'NOISE'];
 
@@ -36,7 +36,7 @@ function defaultStepParam() {
 function defaultChannel(track) { return (track % 16) + 1; }
 function defaultMidiPort(track) { return Math.floor(track / TRACK_BANK_SIZE); }
 function defaultSeqNote(track) { return [60, 64, 67, 36][track] ?? 60; }
-function defaultEngine(track) { return ['ANALOG', 'DIGITAL', 'PHASE', 'SAMPLE'][track] ?? 'ANALOG'; }
+function defaultEngine(track) { return ['ANALOG', 'DIGITAL', 'PHASE', 'SAMPLE', 'LOFI', 'VOICE', 'FM6', 'NOISE'][track] ?? 'ANALOG'; }
 
 export function createState() {
   return {
